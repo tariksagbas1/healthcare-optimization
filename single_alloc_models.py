@@ -5,10 +5,46 @@ from time import time
 from matplotlib import pyplot
 from sklearn.cluster import KMeans
 
+
+"""
+CLUSTERING
+"""
+def cluster(dataset_index):
+    p = []  # Population of every community
+    cord_com = []  # Coordinate of every population [x, y]
+    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file:  # Read from file
+        lines = file.readlines()
+
+    line1 = lines[0].split()
+    n = int(line1[0])  # Number of
+    m = int(line1[1])  # Number of healthcare units to place
+    M = n
+
+    for line in lines[2:]:  # skip first two lines
+        values = list(map(float, line.split()))  # Convert all values to floats
+        x, y, C, population = values[1], values[2], values[3], int(values[4])
+        cord_com.append([x, y])  # add coordinates
+        p.append(population)  # add populations for each community i
+
+    kmeans = KMeans(n_clusters=m, random_state=0).fit(cord_com)
+    facility_coords = kmeans.cluster_centers_
+    assigned_centers = kmeans.predict(cord_com)
+    from scipy.spatial.distance import cdist
+    import numpy as np
+
+    facility_indices = []
+    for center in facility_coords:
+        dists = cdist([center], cord_com)
+        closest_index = np.argmin(dists)
+        facility_indices.append(closest_index)
+    return facility_indices
+
 """
 PLOTTING
 """
-def plot_function(dataset_index, units = []):
+def plot_function(dataset_index, units=None):
+    if units is None:
+        units = []
     with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file: # Read from file
         lines = file.readlines()  
     p = []
@@ -30,8 +66,7 @@ def plot_function(dataset_index, units = []):
 
     
     for i, name in enumerate(community_names):
-        pyplot.annotate(name, (x[i], y[i]), textcoords="offset points", xytext=(0,5), ha='center', fontsize=8)
-    
+        pyplot.annotate(str(name), (x[i], y[i]), textcoords="offset points", xytext=(0,5), ha='center', fontsize=8)
     pyplot.xticks(linspace(min(x), max(x), num=20))  # 20 intervals along the x-axis
     pyplot.yticks(linspace(min(y), max(y), num=20))  # 20 intervals along the y-axis    
     pyplot.show()
@@ -44,6 +79,7 @@ SINGLE ALLOCATION MODELS
 def sam_global(dataset_index):
 
     # INITIAL DATA
+
 
     p = [] # Population of every community
     cord_com = [] # Coordinate of every population [x, y]
@@ -72,13 +108,33 @@ def sam_global(dataset_index):
             row.append(distance)
         d_ij.append(row)
 
+    minimums = []
+    for i in range(n):
+        weight_dist = set()
+        for j in range(n):
+            if i != j :
+                weight_dist.add(p[i] * d_ij[i][j])
+        minimums.append(min(weight_dist))
+
+    maximums = []
+    for i in range(n):
+        index = -1
+        max_val = -1
+        for j in range(n):
+            if i != j :
+                val = p[i] * d_ij[i][j]
+                if val > max_val:
+                    max_val = val
+                    index = j
+        maximums.append((i ,index, max_val))
+    maximums.sort(key=lambda x: x[2], reverse=True)
     # Create model
 
     model = Model("Healthcare Placement")
 
     # Decision variables
 
-    # b_ij: if population i is served by unit on j
+    # b_ij: 1 if population i is served by unit on j 0 o/w
     b_ij = {}
     for i in range(n):
         for j in range(n):
@@ -89,16 +145,19 @@ def sam_global(dataset_index):
     for j in range(n):
         z_j.append(model.addVar(vtype = GRB.BINARY, name = f"z_{j}"))
 
-    # Z: auxillary variable 
-    Z = model.addVar(vtype = GRB.CONTINUOUS, name = "Z") 
+    # Z: auxiliary variable
+    Z = model.addVar(vtype = GRB.CONTINUOUS, name = "Z")
     
     model.update()
 
     model.setObjective(Z, GRB.MINIMIZE)
 
     # Constraints
+    for j in range(n):
+        model.addConstr(Z >= minimums[j]*(1-z_j[j]))
 
-    
+    model.addConstr(Z <= maximums[0][2])
+
     # Z > b_ij * d_ij for every i, j
     for i in range(n):
         for j in range(n):
@@ -109,7 +168,7 @@ def sam_global(dataset_index):
         variables = 0.0
         for i in range(n):
             variables += b_ij[(i, j)] * p[i]
-        model.addConstr(variables <= C, name = f"capacity_constraint_{i}")
+        model.addConstr(variables <= C * z_j[j], name = f"capacity_constraint_{i}")
   
     # Population constraint
     for i in range(n):
@@ -133,11 +192,13 @@ def sam_global(dataset_index):
         sum += z_j[j]
     model.addConstr(sum == m, name = f"unit_constraint")
 
+    best_Z = None
     # START TIMER
     start = time()
 
     # Solve Model
     model.optimize()
+
     print()
     # END TIMER
     end = time()
@@ -158,7 +219,6 @@ def sam_global(dataset_index):
             for j in range(n):
                 if b_ij[(i, j)].x == 1 and j not in ls:
                     ls.append(j)
-        
         return str(round(time_elapsed, 2)) + " seconds, Z : " + str(Z.x), ls, assignments
     else:
         return "Model Is Infeasible"
@@ -222,7 +282,7 @@ def sam_apx1(dataset_index, up = 90):
     for j in range(n):
         z_j.append(model.addVar(vtype = GRB.BINARY, name = f"z_{j}"))
 
-    # Z: auxillary variable 
+    # Z: auxiliary variable
     Z = model.addVar(vtype = GRB.CONTINUOUS, name = "Z") 
     
     model.update()
@@ -348,7 +408,7 @@ def sam_ifs1(dataset_index, units: list):
             b_ij[(i, unit_index)] = model.addVar(vtype = GRB.BINARY, name = f"b_{i}_{unit_index}")
             
 
-    # Z: auxillary variable 
+    # Z: auxiliary variable
     Z = model.addVar(vtype = GRB.CONTINUOUS, name = "Z") 
     
     model.update()
@@ -393,12 +453,12 @@ def sam_ifs1(dataset_index, units: list):
     end = time()
     time_elapsed = end - start
     if model.status == GRB.OPTIMAL:
-
+        z_val = Z.x
         for unit_index in units:
             for i in range(n):
                 b_ij[(i, unit_index)] = b_ij[(i, unit_index)].x
 
-        return b_ij, round(time_elapsed, 2)
+        return b_ij, round(time_elapsed, 2), z_val
     else:
         return "Model Is Infeasible"
 """
@@ -436,6 +496,27 @@ def sam_global_w_ifs1(dataset_index):
             row.append(distance)
         d_ij.append(row)
 
+    minimums = []
+    for i in range(n):
+        weight_dist = set()
+        for j in range(n):
+            if i != j :
+                weight_dist.add(p[i] * d_ij[i][j])
+        minimums.append(min(weight_dist))
+
+    maximums = []
+    for i in range(n):
+        index = -1
+        max_val = -1
+        for j in range(n):
+            if i != j :
+                val = p[i] * d_ij[i][j]
+                if val > max_val:
+                    max_val = val
+                    index = j
+        maximums.append((i ,index, max_val))
+    maximums.sort(key=lambda x: x[2], reverse=True)
+
     # Create model
 
     model = Model("Healthcare Placement")
@@ -453,15 +534,19 @@ def sam_global_w_ifs1(dataset_index):
     for j in range(n):
         z_j.append(model.addVar(vtype = GRB.BINARY, name = f"z_{j}"))
 
-    # Z: auxillary variable 
-    Z = model.addVar(vtype = GRB.CONTINUOUS, name = "Z") 
-    
+    # Z: auxiliary variable
+    Z = model.addVar(vtype = GRB.CONTINUOUS, name = "Z")
+
     model.update()
 
     model.setObjective(Z, GRB.MINIMIZE)
 
     # Constraints
 
+    for j in range(n):
+        model.addConstr(Z >= minimums[j]*(1-z_j[j]))
+
+    model.addConstr(Z <= maximums[0][2])
     
     # Z > b_ij * d_ij for every i, j
     for i in range(n):
@@ -473,7 +558,7 @@ def sam_global_w_ifs1(dataset_index):
         variables = 0.0
         for i in range(n):
             variables += b_ij[(i, j)] * p[i]
-        model.addConstr(variables <= C, name = f"capacity_constraint_{i}")
+        model.addConstr(variables <= C * z_j[j], name = f"capacity_constraint_{i}")
   
     # Population constraint
     for i in range(n):
@@ -499,10 +584,10 @@ def sam_global_w_ifs1(dataset_index):
     # START TIMER
     start = time()
 
+    units = [14, 15, 18, 19, 20, 21, 24, 30, 38, 41, 42, 53, 64, 70, 71, 72, 79, 85, 89, 90, 100, 109, 117, 123, 125, 129, 132, 137, 139, 143, 153, 155, 177, 192, 197]
+    b_ij_start, ifs_time, z_val = sam_ifs1(dataset_index, units)
 
-    units = [3, 1, 99, 71, 47, 17, 5, 52, 24, 92, 0, 32, 20, 56, 25]
-    b_ij_start, ifs_time = sam_ifs1(dataset_index, units)
-
+    model.addConstr(Z <= z_val)
     # Set starting values with IFS
     for i in range(n):
         for j in range(n):
@@ -510,8 +595,9 @@ def sam_global_w_ifs1(dataset_index):
                 b_ij[(i, j)].start = b_ij_start[(i, j)]
             else:
                 b_ij[(i, j)].start = 0
-    
 
+    model.setParam("MIPGap", 0.1)
+    model.setParam("MIPFocus", 1)
     # Solve Model
     model.optimize()
     print()
@@ -537,8 +623,9 @@ def sam_global_w_ifs1(dataset_index):
                 if b_ij[(i, j)].x == 1 and j not in ls:
                     ls.append(j)
         
-        return f"IFS took {ifs_time} seconds. Total time: "+ str(round(time_elapsed, 2)) + " seconds, Z : " + str(Z.x), ls, assignments
+        return f"IFS took {ifs_time} seconds. Total time: " + str(round(time_elapsed, 2)) + " seconds, Z : " + str(Z.x), ls, assignments
     else:
         return "Model Is Infeasible"
 
 
+# plot_function(8, [69, 78, 55, 13, 75, 16, 23, 26, 8, 48, 53, 187, 42, 44, 50, 61, 81, 292, 121, 160, 105, 140, 134, 150, 152, 143, 181, 240, 231, 271])

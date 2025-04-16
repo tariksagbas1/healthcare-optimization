@@ -554,7 +554,7 @@ def mam_apx3(dataset_index):
 ITERATIVE METHOD 1
  - Start with r constraints, solve model and add the most violated constraint at every iteration and solve again
  - Since there are many redundant >= 0 constraints, avoid as many as possible by solving iteratively
- - (The constraint refferred to here are Z >= constraints)
+ - (The constraint referred to here are Z >= constraints)
 """
 def mam_iterative(dataset_index, r):
    

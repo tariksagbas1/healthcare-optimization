@@ -3,7 +3,7 @@ from math import dist, sqrt
 from numpy import percentile, linspace, array
 from time import time
 from matplotlib import pyplot
-from sklearn.cluster import KMeans
+from sklearn.cluster import AgglomerativeClustering
 
 """
 PLOTTING
@@ -43,6 +43,109 @@ def plot_function(dataset_index, units = [], assignments = {}):
     pyplot.yticks(linspace(min(y), max(y), num=20))  # 20 intervals along the y-axis    
     pyplot.show()
 
+def plot_function2(dataset_index, test_units = [], true_units = [], assignments = {}):
+    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file: # Read from file
+        lines = file.readlines()  
+    p = []
+    cord_com = []
+    i = 0
+    community_names = []
+    for line in lines[2:]:  # skip first two lines
+        values = list(map(float, line.split()))  # Convert all values to floats
+        x, y, population = values[1], values[2], int(values[4])
+        cord_com.append((x, y)) # add coordinates
+        p.append(population)  # add populations for each community i
+        community_names.append(i)
+        i += 1
+
+    colors = [
+    'magenta' if name in true_units and name in test_units
+    else 'red' if name in true_units
+    else 'green' if name in test_units
+    else 'black'
+    for name in community_names
+    ]
+    x, y = zip(*cord_com)
+    pyplot.scatter(x, y, color=colors)
+    pyplot.grid(True)
+
+    
+    for i, name in enumerate(community_names):
+        pyplot.annotate(name, (x[i], y[i]), textcoords="offset points", xytext=(0,5), ha='center', fontsize=8)
+    
+    for unit, served_communities in assignments.items():  # assuming this is your dictionary
+        unit_x, unit_y = cord_com[unit]
+        for comm in served_communities:
+            comm_x, comm_y = cord_com[comm]
+            pyplot.plot([unit_x, comm_x], [unit_y, comm_y], linestyle='--', color='gray', linewidth=0.5)
+
+    
+    pyplot.xticks(linspace(min(x), max(x), num=20))  # 20 intervals along the x-axis
+    pyplot.yticks(linspace(min(y), max(y), num=20))  # 20 intervals along the y-axis    
+    pyplot.show()
+"""
+CLUSTERING
+"""
+def d_cluster(dataset_index):
+    # Initial data (unchanged)
+    p = []  # Population of every community
+    cord_com = []  # Coordinate of every population [x, y]
+    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file:  # Read from file
+        lines = file.readlines()
+
+    line1 = lines[0].split()
+    n = int(line1[0])  # Number of nodes
+    m = int(line1[1])  # Number of healthcare units to place
+
+    for line in lines[2:]:  # skip first two lines
+        values = list(map(float, line.split()))  # Convert all values to floats
+        x, y, C, population = values[1], values[2], values[3], int(values[4])
+        cord_com.append([x, y])  # add coordinates
+        p.append(population)  # add populations for each community i
+
+    # Calculate distances
+    d_ij = []
+    for x1, y1 in cord_com:
+        row = []
+        for x2, y2 in cord_com:
+            distance = dist((x1, y1), (x2, y2))
+            row.append(distance)
+
+        d_ij.append(row)
+
+    # create matrix of weighted distances
+    w_d_ij = []
+    for i in range(n):
+        row = []
+        for j in range(n):
+            row.append(d_ij[i][j]*(p[i]+p[j]) / 2)
+
+        w_d_ij.append(row)
+
+    start = time()
+
+    # Step 1: Fit clustering on distance matrix
+    import numpy as np
+    w_d_ij = np.array(w_d_ij)
+    clustering = AgglomerativeClustering(n_clusters=m, metric='precomputed', linkage='average')
+    labels = clustering.fit_predict(w_d_ij)
+
+    # Step 2: Group node indices by cluster
+    clusters = [[] for _ in range(m)]
+    for idx, label in enumerate(labels):
+        clusters[label].append(idx)
+
+    # Step 3: For each cluster, find the most "central" node
+    # (the one with minimum total distance to all others in its cluster)
+    closest_nodes = []
+
+    for group in clusters:
+        submatrix = w_d_ij[np.ix_(group, group)]  # cluster's intra-distance matrix
+        total_dist = submatrix.sum(axis=1)  # total distance from each node to others
+        best_idx_in_cluster = group[np.argmin(total_dist)]
+        closest_nodes.append(best_idx_in_cluster)
+    end = time()
+    return closest_nodes, round(end - start, 2)
 """
 SINGLE ALLOCATION MODELS
  - Simple global optimum model
@@ -129,15 +232,7 @@ def sam_global(dataset_index):
         model.addConstr(1 == sum, name=f"Population_constraint{i}")
 
     # Total unit constraint, sum(x_i) == m
-    """
-    g_j = []
-    for j in range(n):
-        variables = 0.0
-        for i in range(n):
-            variables += b_ij[(i, j)]
-        g_j.append(variables)
-        model.addConstr(g_j[j] <= M * z_j[j])
-    """
+    
     sum = 0.0
     for j in range(n):
         sum += z_j[j]
@@ -186,11 +281,139 @@ def sam_global(dataset_index):
         return str(round(time_elapsed, 2)) + " seconds, Z : " + str(Z.x), ls, assignments
     else:
         return "Model Is Infeasible"
+"""
+GLOBAL OPTIMAL MODEL 2
+ - Global optimal model with new Z constraint
+"""
+def sam_global2(dataset_index):
 
+    # INITIAL DATA
+
+    p = [] # Population of every community
+    cord_com = [] # Coordinate of every population [x, y]
+    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file: # Read from file
+        lines = file.readlines()  
+
+    line1 = lines[0].split()
+    n = int(line1[0]) # Number of
+    m = int(line1[1]) # Number of healthcare units to place
+    M = n
+
+    for line in lines[2:]:  # skip first two lines
+        values = list(map(float, line.split()))  # Convert all values to floats
+        x, y, C, population = values[1], values[2], values[3], int(values[4])
+        cord_com.append([x, y]) # add coordinates
+        p.append(population)  # add populations for each community i
+
+
+
+    # Calculate distances
+    d_ij = []
+    for x1, y1 in cord_com:
+        row = []
+        for x2, y2 in cord_com:
+            distance = dist((x1, y1), (x2, y2))
+            row.append(distance)
+        d_ij.append(row)
+
+    # Create model
+
+    model = Model("Healthcare Placement")
+
+    # Decision variables
+
+    # b_ij: 1 if population i is served by unit on j. 0 otherwise
+    b_ij = {}
+    for i in range(n):
+        for j in range(n):
+            b_ij[(i, j)] = model.addVar(vtype = GRB.BINARY, name = f"b_{i}_{j}")
+
+    # z_j: 1 if facility is opened at node j. 0 o/w
+    z_j = []
+    for j in range(n):
+        z_j.append(model.addVar(vtype = GRB.BINARY, name = f"z_{j}"))
+
+    # Z: auxillary variable 
+    Z = model.addVar(vtype = GRB.CONTINUOUS, name = "Z") 
+    
+    model.update()
+
+    model.setObjective(Z, GRB.MINIMIZE)
+    
+    # Constraints
+    
+    # Z > p[i] * b_ij * d_ij for every i, j
+    for i in range(n):
+        model.addConstr(Z >= quicksum(p[i] * b_ij[i, j] * d_ij[i][j] for j in range(n)), name = f"Z_constraint_{i}")
+
+    # Capacity constraint, sum(b_ij * p[i]) <= C for every unit. (There can be surplus capacity ?)
+    for j in range(n):
+        variables = 0.0
+        for i in range(n):
+            variables += b_ij[(i, j)] * p[i]
+        model.addConstr(variables <= C * z_j[j], name = f"capacity_constraint_{j}")
+  
+    # Population constraint
+    for i in range(n):
+        sum = 0.0
+        for j in range(n):
+            sum += b_ij[(i, j)]
+        model.addConstr(1 == sum, name=f"Population_constraint{i}")
+
+    # Total unit constraint, sum(x_i) == m
+    
+    sum = 0.0
+    for j in range(n):
+        sum += z_j[j]
+    model.addConstr(sum == m, name = f"unit_constraint")
+
+    # START TIMER
+    start = time()
+
+    # Solve Model
+    model.optimize()
+    print()
+
+    # END TIMER
+    end = time()
+    time_elapsed = end - start
+    if model.status == GRB.OPTIMAL:
+        assignments = {}
+        for j in range(n):
+            coms = []
+            for i in range(n):
+                if b_ij[(i, j)]: ################## MODIFIED ####################
+                    if b_ij[(i, j)].x != 0:
+                        coms.append(i)
+            if coms != []:
+                assignments[j] = coms
+                        
+        ls = []
+        for i in range(n):
+            for j in range(n):
+                if b_ij[(i, j)].x == 1 and j not in ls:
+                    ls.append(j)
+        """
+        for j in range(n):
+            vars = 0
+            for i in range(n):
+                vars += (b_ij[(i, j)].x) * p[i]
+            if vars != 0:
+                print(f"Unit on {j}'s total service is {vars} ")
+        
+        for i in range(n):
+            for j in range(n):
+                if abs((b_ij[(i, j)].x) * d_ij[i][j] * p[i] - Z.x) <= 0.01:
+                    print(f"Z is unit on {j} sending service to {i}")
+        """
+
+        return str(round(time_elapsed, 2)) + " seconds, Z : " + str(Z.x), ls, assignments
+    else:
+        return "Model Is Infeasible"
 """
 FIRST METHOD OF APPROXIMATION
- - If two nodes are very far apart, it is unlikely that if a unit is placed on one of them, it will serve the other
- - If the distance between node i and j d_ij >= d_max, don't create variable b_ij
+ - If two nodes population weighted distance is too large, it is unlikely that if a unit is placed on one of them, it will serve the other
+ - If the population weighted distance between node i and j d_ij >= d_max, don't create variable b_ij
 """
 def sam_apx1(dataset_index, d_up = 90):
 
@@ -223,8 +446,8 @@ def sam_apx1(dataset_index, d_up = 90):
             row.append(distance)
         d_ij.append(row)
 
-    all_distances = [d_ij[i][j] for i in range(n) for j in range(n) if i != j] ################## MODIFIED ####################
-    d_max = percentile(all_distances, d_up) ################## MODIFIED ####################
+    all_weighted_distances = [d_ij[i][j] * ((p[i] + p[j]) / 2) for i in range(n) for j in range(n) if i != j] ################## MODIFIED ####################
+    d_max = percentile(all_weighted_distances, d_up) ################## MODIFIED ####################
 
     # Create model
 
@@ -268,7 +491,7 @@ def sam_apx1(dataset_index, d_up = 90):
         for i in range(n):
             if b_ij[(i, j)]:
                 variables += b_ij[(i, j)] * p[i]
-        model.addConstr(variables <= C, name = f"capacity_constraint_{i}")
+        model.addConstr(variables <= C * z_j[j], name = f"capacity_constraint_{i}")
   
     # Population constraint
     for i in range(n):
@@ -279,15 +502,6 @@ def sam_apx1(dataset_index, d_up = 90):
         model.addConstr(1 == sum, name=f"Population_constraint{i}")
 
     # Total unit constraint, sum(x_i) == m
-    
-    g_j = []
-    for j in range(n):
-        variables = 0.0
-        for i in range(n):
-            if b_ij[(i, j)]: ################## MODIFIED ####################
-                variables += b_ij[(i, j)]
-        g_j.append(variables)
-        model.addConstr(g_j[j] <= M * z_j[j])
 
     sum = 0.0
     for j in range(n):
@@ -327,7 +541,7 @@ def sam_apx1(dataset_index, d_up = 90):
 """
 SECOND METHOD OF APPROXIMATION
  - In addition to methods in apx1
- - If p[i] is small, Z >= d_ij * b_ij * p doesn't need to be enforced. 
+ - If p[i] is small, Z >= d_ij * b_ij * p[i] doesn't need to be enforced. 
 """
 def sam_apx2(dataset_index, d_up = 90, p_lp = 10):
 
@@ -360,7 +574,7 @@ def sam_apx2(dataset_index, d_up = 90, p_lp = 10):
             row.append(distance)
         d_ij.append(row)
 
-    all_distances = [d_ij[i][j] for i in range(n) for j in range(n) if i != j] ################## MODIFIED ####################
+    all_distances = [d_ij[i][j] * (p[i] + p[j])/2 for i in range(n) for j in range(n) if i != j] ################## MODIFIED ####################
     d_max = percentile(all_distances, d_up) ################## MODIFIED ####################
 
     p_min = percentile(p, p_lp)
@@ -408,7 +622,7 @@ def sam_apx2(dataset_index, d_up = 90, p_lp = 10):
         for i in range(n):
             if b_ij[(i, j)]:
                 variables += b_ij[(i, j)] * p[i]
-        model.addConstr(variables <= C, name = f"capacity_constraint_{i}")
+        model.addConstr(variables <= C * z_j[j], name = f"capacity_constraint_{i}")
   
     # Population constraint
     for i in range(n):
@@ -419,15 +633,6 @@ def sam_apx2(dataset_index, d_up = 90, p_lp = 10):
         model.addConstr(1 == sum, name=f"Population_constraint{i}")
 
     # Total unit constraint, sum(x_i) == m
-    
-    g_j = []
-    for j in range(n):
-        variables = 0.0
-        for i in range(n):
-            if b_ij[(i, j)]: ################## MODIFIED ####################
-                variables += b_ij[(i, j)]
-        g_j.append(variables)
-        model.addConstr(g_j[j] <= M * z_j[j])
 
     sum = 0.0
     for j in range(n):
@@ -467,7 +672,7 @@ def sam_apx2(dataset_index, d_up = 90, p_lp = 10):
 """
 INITIAL FEASIBLE SOLUTION
  - Generation of ifs with assignment problem
- - Given pre-located units, solve it as assignment problem, use the solution as an ifs
+ - Pre-located units by agglomerative clustering, solve it as assignment problem, use the solution as an ifs
 """
 def sam_ifs1(dataset_index, units: list):
 
@@ -665,7 +870,7 @@ def sam_global_w_ifs1(dataset_index):
     start = time()
 
 
-    units = [67, 81, 71, 35, 37, 64, 92, 56, 33, 77, 52, 3, 66, 25, 16]
+    units = d_cluster(dataset_index)[0]
     b_ij_start, ifs_time = sam_ifs1(dataset_index, units)
 
     # Set starting values with IFS
@@ -705,8 +910,136 @@ def sam_global_w_ifs1(dataset_index):
         return f"IFS took {ifs_time} seconds. Total time: "+ str(round(time_elapsed, 2)) + " seconds, Z : " + str(Z.x), ls, assignments
     else:
         return "Model Is Infeasible"
+"""
+GLOBAL SOLUTION 2 WITH IFS1
+ - Using sam_ifs1() to generate an ifs
+ - Global optimal model with new Z constraint
+"""
+def sam_global2_w_ifs1(dataset_index):
+
+    # INITIAL DATA
+
+    p = [] # Population of every community
+    cord_com = [] # Coordinate of every population [x, y]
+    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file: # Read from file
+        lines = file.readlines()  
+
+    line1 = lines[0].split()
+    n = int(line1[0]) # Number of
+    m = int(line1[1]) # Number of healthcare units to place
+    M = n
+
+    for line in lines[2:]:  # skip first two lines
+        values = list(map(float, line.split()))  # Convert all values to floats
+        x, y, C, population = values[1], values[2], values[3], int(values[4])
+        cord_com.append([x, y]) # add coordinates
+        p.append(population)  # add populations for each community i
 
 
+
+    # Calculate distances
+    d_ij = []
+    for x1, y1 in cord_com:
+        row = []
+        for x2, y2 in cord_com:
+            distance = dist((x1, y1), (x2, y2))
+            row.append(distance)
+        d_ij.append(row)
+
+    # Create model
+
+    model = Model("Healthcare Placement")
+
+    # Decision variables
+
+    # b_ij: if population i is served by unit on j
+    b_ij = {}
+    for i in range(n):
+        for j in range(n):
+            b_ij[(i, j)] = model.addVar(vtype = GRB.BINARY, name = f"b_{i}_{j}")
+
+    # z_j: 1 if facility is opened at node j. 0 o/w
+    z_j = []
+    for j in range(n):
+        z_j.append(model.addVar(vtype = GRB.BINARY, name = f"z_{j}"))
+
+    # Z: auxillary variable 
+    Z = model.addVar(vtype = GRB.CONTINUOUS, name = "Z") 
+    
+    model.update()
+
+    model.setObjective(Z, GRB.MINIMIZE)
+
+    # Constraints
+
+    
+    # Z > p[i] * b_ij * d_ij for every i, j
+    for i in range(n):
+        model.addConstr(Z >= quicksum(p[i] * b_ij[i, j] * d_ij[i][j] for j in range(n)), name = f"Z_constraint_{i}")
+    
+    # Capacity constraint, sum(b_ij * p[i]) <= C for every unit. (There can be surplus capacity ?)
+    for j in range(n):
+        variables = 0.0
+        for i in range(n):
+            variables += b_ij[(i, j)] * p[i]
+        model.addConstr(variables <= C * z_j[j], name = f"capacity_constraint_{i}")
+  
+    # Population constraint
+    for i in range(n):
+        sum = 0.0
+        for j in range(n):
+            sum += b_ij[(i, j)]
+        model.addConstr(1 == sum, name=f"Population_constraint{i}")
+
+    sum = 0.0
+    for j in range(n):
+        sum += z_j[j]
+    model.addConstr(sum == m, name = f"unit_constraint")
+
+    # START TIMER
+    start = time()
+
+
+    units = d_cluster(dataset_index)[0]
+    b_ij_start, ifs_time = sam_ifs1(dataset_index, units)
+
+    # Set starting values with IFS
+    for i in range(n):
+        for j in range(n):
+            if (i, j) in b_ij_start:
+                b_ij[(i, j)].start = b_ij_start[(i, j)]
+            else:
+                b_ij[(i, j)].start = 0
+    
+
+    # Solve Model
+    model.optimize()
+    print()
+
+    # END TIMER
+    end = time()
+
+    time_elapsed = end - start
+    if model.status == GRB.OPTIMAL:
+        assignments = {}
+        for j in range(n):
+            coms = []
+            for i in range(n):
+                if b_ij[(i, j)]: ################## MODIFIED ####################
+                    if b_ij[(i, j)].x != 0:
+                        coms.append(i)
+            if coms != []:
+                assignments[j] = coms
+                        
+        ls = []
+        for i in range(n):
+            for j in range(n):
+                if b_ij[(i, j)].x == 1 and j not in ls:
+                    ls.append(j)
+        
+        return f"IFS took {ifs_time} seconds. Total time: "+ str(round(time_elapsed, 2)) + " seconds, Z : " + str(Z.x), ls, assignments
+    else:
+        return "Model Is Infeasible"
 
 def sam_new_obj(dataset_index):
 
@@ -824,5 +1157,151 @@ def sam_new_obj(dataset_index):
         return str(round(time_elapsed, 2)) + " seconds, Z : " + str(max(als)), ls, assignments
     else:
         return "Model Is Infeasible"
+"""
+THIRD APPROXIMATION METHOD WITH IFS1
+ - New Z constraint
+ - Use of ifs1
+ - Method of approximation 1 and 2
+"""
 
-plot_function(7)
+def sam_apx3_w_ifs1(dataset_index, d_up = 90, p_lp = 10):
+
+    # INITIAL DATA
+
+    p = [] # Population of every community
+    cord_com = [] # Coordinate of every population [x, y]
+    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file: # Read from file
+        lines = file.readlines()  
+
+    line1 = lines[0].split()
+    n = int(line1[0]) # Number of
+    m = int(line1[1]) # Number of healthcare units to place
+
+    for line in lines[2:]:  # skip first two lines
+        values = list(map(float, line.split()))  # Convert all values to floats
+        x, y, C, population = values[1], values[2], values[3], int(values[4])
+        cord_com.append([x, y]) # add coordinates
+        p.append(population)  # add populations for each community i
+
+
+
+    # Calculate distances
+    d_ij = []
+    for x1, y1 in cord_com:
+        row = []
+        for x2, y2 in cord_com:
+            distance = dist((x1, y1), (x2, y2))
+            row.append(distance)
+        d_ij.append(row)
+
+    all_weighted_distances = [d_ij[i][j] * ((p[i] + p[j])/2) for i in range(n) for j in range(n) if i != j] ################## MODIFIED ####################
+    d_max = percentile(all_weighted_distances, d_up) ################## MODIFIED ####################
+    p_min = percentile(p, p_lp) ################## MODIFIED ####################
+
+    # Create model
+
+    model = Model("Healthcare Placement")
+
+    # Decision variables
+
+    # b_ij: if population i is served by unit on j
+    b_ij = {}
+    h = 0
+    for i in range(n):
+        for j in range(n):
+            if d_ij[i][j] * ((p[i] + p[j])/2) < d_max: ################## MODIFIED ####################
+                b_ij[(i, j)] = model.addVar(vtype = GRB.BINARY, name = f"b_{i}_{j}")
+            else:
+                b_ij[(i, j)] = None
+
+    # z_j: 1 if facility is opened at node j. 0 o/w
+    z_j = []
+    for j in range(n):
+        z_j.append(model.addVar(vtype = GRB.BINARY, name = f"z_{j}"))
+
+    # Z: auxillary variable 
+    Z = model.addVar(vtype = GRB.CONTINUOUS, name = "Z") 
+    
+    model.update()
+
+    model.setObjective(Z, GRB.MINIMIZE)
+
+    # Constraints
+
+    
+    # Z > b_ij * d_ij * p[i] for every i, j 
+    # Only add if p[i] isn't very small 
+    for i in range(n):
+        variables = 0.0
+        for j in range(n):
+            if i != j and b_ij[(i, j)] and p[i] >= p_min: ################## MODIFIED ####################
+                variables += p[i] * b_ij[i, j] * d_ij[i][j]
+        model.addConstr(Z >= variables, name = f"Z_constraint_{j}")
+    
+    # Capacity constraint, sum(b_ij * p[i]) <= C for every unit. (There can be surplus capacity ?)
+    for j in range(n):
+        variables = 0.0
+        for i in range(n):
+            if b_ij[(i, j)]:
+                variables += b_ij[(i, j)] * p[i]
+        model.addConstr(variables <= C * z_j[j], name = f"capacity_constraint_{i}")
+  
+    # Population constraint
+    for i in range(n):
+        sum = 0.0
+        for j in range(n):
+            if b_ij[(i, j)]: ################## MODIFIED ####################
+                sum += b_ij[(i, j)]
+        model.addConstr(1 == sum, name=f"Population_constraint{i}")
+
+    # Total unit constraint, sum(x_i) == m
+
+    sum = 0.0
+    for j in range(n):
+        sum += z_j[j]
+    model.addConstr(sum == m, name = f"unit_constraint")
+
+
+    units = d_cluster(dataset_index)[0]
+    b_ij_start, ifs_time = sam_ifs1(dataset_index, units)
+
+    # Set starting values with IFS
+    for i in range(n):
+        for j in range(n):
+            if b_ij[(i, j)]:
+                if (i, j) in b_ij_start:
+                    b_ij[(i, j)].start = b_ij_start[(i, j)]
+                else:
+                    b_ij[(i, j)].start = 0
+    
+
+    # START TIMER
+    start = time()
+
+    # Solve Model
+    model.optimize()
+    print()
+    # END TIMER
+    end = time()
+    time_elapsed = end - start
+
+    assignments = {}
+    for j in range(n):
+        coms = []
+        for i in range(n):
+            if b_ij[(i, j)]: ################## MODIFIED ####################
+                if b_ij[(i, j)].x != 0:
+                    coms.append(i)
+        if coms != []:
+            assignments[j] = coms
+    
+    ls = []
+    for i in range(n):
+        for j in range(n):
+            if b_ij[(i, j)]:
+                if b_ij[(i, j)].x == 1 and j not in ls:
+                    ls.append(j)
+    return f"Optimality Gap: {model.MIPGap * 100:.2f}% " + str(round(time_elapsed, 2)) + " seconds, Z : " + str(Z.x), ls, assignments
+
+
+print(sam_apx3_w_ifs1(5, 100, 0))

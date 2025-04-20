@@ -245,9 +245,6 @@ def lp_global(dataset_index):
     # Constraints
 
     model.addConstr(Z <= maximums[0][2])
-    cluster_index, cluster_time = weighted_clustering(dataset_index)
-    for j in cluster_index:
-        z_j[j].start = 1
 
     # Z > p_i * b_ij * d_ij for every i, j
     for i in range(n):
@@ -299,14 +296,14 @@ def lp_global(dataset_index):
         for j in range(n):
             coms = []
             for i in range(n):
-                if b_ij[(i, j)].x != 0:
+                if b_ij[(i, j)].x > 0.5:
                     coms.append(i)
             if coms:
                 assignments[j] = coms
 
         ls = []
         for j in range(n):
-            if z_j[j].x == 1:
+            if z_j[j].x > 0.5:
                 ls.append(j)
 
         return str(round(time_elapsed, 2)), " seconds, Z : " , Z.x, ls, assignments
@@ -501,7 +498,8 @@ def solver_w_ifs(dataset_index):
     else:
         return "Model Is Infeasible"
 
-# SOLVE MORE COMPLEX DATASETS: PHASES WITH DIFFERENT PARAMETERS
+# SOLVE MORE COMPLEX DATASETS, METHOD 1:
+# PHASES
 # Phase 1: tries to find the best feasible solution it can find
 # stops at time limit and writes the current best solution to a file "phase1.sol"
 def phase_1(dataset_index):
@@ -810,9 +808,10 @@ def phase_2(dataset_index, best_bound, phase1_val):
     # good if values are too close to each other
     model.setParam("GomoryPasses", 5) # better cuts to enhance bounds
     model.setParam("FlowCoverCuts", 2)
+    model.setParam("MIPFocus", 1)
     model.setParam('Presolve', 2) # tells gurobi to do a better presolve
     model.setParam("Heuristics", 0.3) # helps tighten the upper bound faster
-    model.setParam("TimeLimit", 800) # get a good enough solution in reasonable amount of time
+    model.setParam("TimeLimit", 500) # get a good enough solution in reasonable amount of time
     # also useful when gurobi already found the global optimum but is trying to prove optimality
     # and stalls at a certain optimality gap
 
@@ -844,8 +843,322 @@ def phase_2(dataset_index, best_bound, phase1_val):
     else:
         return "Model Is Infeasible"
 
+# SOLVE MORE COMPLEX DATASETS, METHOD 2:
+# APPROXIMATION BY DOWNSCALING
+# "sam_apx3_w_ifs1" function reduces the number of variables and constraints
+# by excluding too large weighted distances and too little populations
+
+def sam_apx3_w_ifs1(dataset_index, d_up=90, p_lp=10):
+    # INITIAL DATA
+
+    p = []  # Population of every community
+    cord_com = []  # Coordinate of every population [x, y]
+    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file:  # Read from file
+        lines = file.readlines()
+
+    line1 = lines[0].split()
+    n = int(line1[0])  # Number of nodes
+    m = int(line1[1])  # Number of healthcare units to place
+
+    for line in lines[2:]:  # skip first two lines
+        values = list(map(float, line.split()))  # Convert all values to floats
+        x, y, C, population = values[1], values[2], values[3], int(values[4])
+        cord_com.append([x, y])  # add coordinates
+        p.append(population)  # add populations for each community i
+
+    # Calculate distances
+    d_ij = []
+    for x1, y1 in cord_com:
+        row = []
+        for x2, y2 in cord_com:
+            distance = dist((x1, y1), (x2, y2))
+            row.append(distance)
+        d_ij.append(row)
+
+    all_weighted_distances = [d_ij[i][j] * ((p[i] + p[j]) / 2) for i in range(n) for j in range(n) if i != j]
+    d_max = percentile(all_weighted_distances, d_up)
+    p_min = percentile(p, p_lp)
+
+    # Create model
+
+    model = Model("Healthcare Placement")
+
+    # Decision variables
+
+    # b_ij: if population i is served by unit on j
+    b_ij = {}
+    for i in range(n):
+        for j in range(n):
+            if d_ij[i][j] * ((p[i] + p[j]) / 2) < d_max:
+                b_ij[(i, j)] = model.addVar(vtype=GRB.BINARY, name=f"b_{i}_{j}")
+            else:
+                b_ij[(i, j)] = None
+
+    # z_j: 1 if facility is opened at node j. 0 o/w
+    z_j = []
+    for j in range(n):
+        z_j.append(model.addVar(vtype=GRB.BINARY, name=f"z_{j}"))
+
+    # Z: auxillary variable
+    Z = model.addVar(vtype=GRB.CONTINUOUS, name="Z")
+
+    model.update()
+
+    model.setObjective(Z, GRB.MINIMIZE)
+
+    # Constraints
+
+    # Z > b_ij * d_ij * p[i] for every i, j
+    # Only add if p[i] isn't very small
+    for i in range(n):
+        variables = 0.0
+        for j in range(n):
+            if i != j and b_ij[(i, j)] and p[i] >= p_min:
+                variables += p[i] * b_ij[i, j] * d_ij[i][j]
+        model.addConstr(Z >= variables, name=f"Z_constraint_{j}")
+
+    # Capacity constraint, sum(b_ij * p[i]) <= C for every unit. (surplus capacity allowed)
+    for j in range(n):
+        variables = 0.0
+        for i in range(n):
+            if b_ij[(i, j)]:
+                variables += b_ij[(i, j)] * p[i]
+        model.addConstr(variables <= C * z_j[j], name=f"capacity_constraint_{i}")
+
+    # Population constraint
+    for i in range(n):
+        sum = 0.0
+        for j in range(n):
+            if b_ij[(i, j)]:
+                sum += b_ij[(i, j)]
+        model.addConstr(1 == sum, name=f"Population_constraint{i}")
+
+    # Total unit constraint, sum(x_i) == m
+
+    sum = 0.0
+    for j in range(n):
+        sum += z_j[j]
+    model.addConstr(sum == m, name=f"unit_constraint")
+
+
+    b_ij_start, ifs_time, obj_val = ifs_by_clusters(dataset_index)
+
+    # Set starting values with IFS
+    for i in range(n):
+        for j in range(n):
+            if b_ij[(i, j)]:
+                if (i, j) in b_ij_start:
+                    b_ij[(i, j)].start = b_ij_start[(i, j)]
+                else:
+                    b_ij[(i, j)].start = 0
+
+    # START TIMER
+    start = time()
+
+    # Solve Model
+    model.optimize()
+    print()
+    # END TIMER
+    end = time()
+    time_elapsed = end - start
+
+    assignments = {}
+    for j in range(n):
+        coms = []
+        for i in range(n):
+            if b_ij[(i, j)]:  ################## MODIFIED ####################
+                if b_ij[(i, j)].x != 0:
+                    coms.append(i)
+        if coms != []:
+            assignments[j] = coms
+
+    ls = []
+    for i in range(n):
+        for j in range(n):
+            if b_ij[(i, j)]:
+                if b_ij[(i, j)].x == 1 and j not in ls:
+                    ls.append(j)
+    return f"Optimality Gap: {model.MIPGap * 100:.2f}% " + str(round(time_elapsed, 2)) + " seconds, Z : " + str(
+        Z.x), ls, assignments
+
+
 # STAGE 2
 
-# print(phase_1(13))
-# print(phase_2(11, 15922.07554899332, 35149.59432198329))
-print(lp_global(20))
+def cvrp_global(dataset_index, units=list(), assignments=dict()):
+    full_units = [0] + units
+    unit_cords = []  # Healthcare unit coordinates
+    q = {}  # Unit equipment need
+    p = []  # Population of every community
+
+    M = len(units)
+    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file:
+        lines = file.readlines()
+
+    line2 = lines[1].split()
+    depot_cord = (float(line2[1]), float(line2[2]))  # Depot coordinates
+    unit_cords.append(depot_cord)
+
+    for line in lines[2:]:
+        vals = list(map(float, line.split()))
+        index = vals[0]
+        p.append(vals[4])
+        if index - 1 in units:
+            cords = (vals[1], vals[2])
+            unit_cords.append(cords)
+
+    for unit in assignments:
+        total = 0
+        for com in assignments[unit]:
+            total += p[com]
+        q[unit] = total
+
+    d_ij = {}
+    for i, (x1, y1) in enumerate(unit_cords):
+        for j, (x2, y2) in enumerate(unit_cords):
+            distance = dist((x1, y1), (x2, y2))
+            index1 = full_units[i]
+            index2 = full_units[j]
+            d_ij[(index1, index2)] = distance
+
+    model = Model("Ambulance Routing")
+
+    # Decision variables
+    x_ijk = {}
+    for i in full_units:
+        for j in full_units:
+            for k in range(M):
+                x_ijk[(i, j, k)] = model.addVar(vtype=GRB.BINARY, name=f"x_{i}{j}{k}")
+
+    # Auxillary variable
+    u_i = {}
+    for i in units:
+        u_i[i] = model.addVar(vtype=GRB.CONTINUOUS, lb=q[i], ub=10000)
+
+    # 1 if ambulance k is deployed, 0 otherwise
+    y_k = {}
+    for k in range(M):
+        y_k[k] = model.addVar(vtype=GRB.BINARY, name=f"y_{k}")
+
+    Z = 0.0
+    for i in full_units:
+        for j in full_units:
+            for k in range(M):
+                Z += x_ijk[(i, j, k)] * d_ij[(i, j)]
+
+    model.update()
+
+    model.setObjective(Z, GRB.MINIMIZE)
+
+    # Constraints
+
+    # A node is visited by a single ambulance
+
+    for i in units:
+        total = 0.0
+        for k in range(M):
+            for j in full_units:
+                if i != j:
+                    total += x_ijk[(i, j, k)]
+        model.addConstr(total == 1, name=f"single_vehicle_constraint_{i}_{k}")
+
+    total = 0.0
+    for k in range(M):
+        for j in full_units:
+            if 0 != j:
+                total += x_ijk[(0, j, k)]
+    model.addConstr(total <= M, name=f"single_vehicle_constraint_{i}_{k}")
+
+    for k in range(M):
+        total = 0
+        for i in units:
+            for j in units:
+                if i != j:
+                    total += x_ijk[(i, j, k)] * q[j]
+        model.addConstr(total <= 10000 * y_k[k], name=f"equipment_constraint_{k}")
+
+    # Must include starting 0 node
+    for k in range(M):
+        total = 0.0
+        for j in units:
+            total += x_ijk[(0, j, k)]
+        model.addConstr(total == 1 * y_k[k], name=f"starting_node_constraint_{k}")
+
+        # Must include ending 0 node
+    for k in range(M):
+        total = 0.0
+        for i in units:
+            total += x_ijk[(i, 0, k)]
+        model.addConstr(total == 1 * y_k[k], name=f"ending_node_constraint_{k}")
+
+        # No going back to the same node you came from
+    total = 0.0
+    for k in range(M):
+        for i in full_units:
+            total += x_ijk[(i, i, k)]
+    model.addConstr(total == 0, name="No_self_loops_constraint")
+
+    # Flow constraint
+    for i in units:
+        for k in range(M):
+            outflow = 0.0
+            inflow = 0.0
+            for j in full_units:
+                if i != j:
+                    outflow += x_ijk[(i, j, k)]
+                    inflow += x_ijk[(j, i, k)]
+            model.addConstr(outflow == inflow, name=f"flow_constraint_{i}_{k}")
+
+    # Ambulance count constraint
+    total = 0.0
+    for k in range(M):
+        total += y_k[k]
+    model.addConstr(total <= len(units))
+
+    # Subtour elimination constraint
+    for i in units:
+        for j in units:
+            if i != j:
+                for k in range(M):
+                    model.addConstr(u_i[i] - u_i[j] + (10000 * x_ijk[(i, j, k)]) <= 10000 - q[j],
+                                    name=f"SEC_{(i, j, k)}")
+
+    model.optimize()
+    if True:
+
+        routes = {}
+        route_count = 1
+
+        for k in range(M):
+            # Collect all active arcs for ambulance k
+            arc_list = []
+            for i in full_units:
+                for j in full_units:
+                    if i != j and x_ijk[(i, j, k)].x > 0.5:
+                        arc_list.append((i, j))
+
+            if not arc_list:
+                continue  # skip unused ambulances
+
+            # Build ordered route starting from depot
+            route = [0]
+            current = 0
+            while True:
+                found = False
+                for (i, j) in arc_list:
+                    if i == current:
+                        route.append(j)
+                        current = j
+                        arc_list.remove((i, j))
+                        found = True
+                        break
+                if not found or current == 0:
+                    break
+            routes[f"Route_{route_count}"] = route
+            route_count += 1
+        # Now print or return it
+        return model.ObjVal, routes
+
+
+print(phase_1(19))
+# print(phase_2(13, 11182.154971080781, 32021.741863927393))
+

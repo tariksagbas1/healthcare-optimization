@@ -1,8 +1,83 @@
 from gurobipy import Model, GRB, quicksum
 from math import dist, sqrt
+from matplotlib import pyplot
 from numpy import percentile, linspace, array
 from time import time
 from sklearn.cluster import AgglomerativeClustering
+
+# PLOTTING
+
+def plot_function(dataset_index, units=[], assignments={}):
+    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file:  # Read from file
+        lines = file.readlines()
+    p = []
+    cord_com = []
+    i = 0
+    community_names = []
+    for line in lines[2:]:  # skip first two lines
+        values = list(map(float, line.split()))  # Convert all values to floats
+        x, y, population = values[1], values[2], int(values[4])
+        cord_com.append((x, y))  # add coordinates
+        p.append(population)  # add populations for each community i
+        community_names.append(i)
+        i += 1
+
+    colors = ['red' if name in units else 'black' for name in community_names]
+    x, y = zip(*cord_com)
+    pyplot.scatter(x, y, color=colors)
+    pyplot.grid(True)
+
+    for i, name in enumerate(community_names):
+        pyplot.annotate(name, (x[i], y[i]), textcoords="offset points", xytext=(0, 5), ha='center', fontsize=8)
+
+    for unit, served_communities in assignments.items():  # assuming this is your dictionary
+        unit_x, unit_y = cord_com[unit]
+        for comm in served_communities:
+            comm_x, comm_y = cord_com[comm]
+            pyplot.plot([unit_x, comm_x], [unit_y, comm_y], linestyle='--', color='gray', linewidth=0.5)
+
+    pyplot.xticks(linspace(min(x), max(x), num=20))  # 20 intervals along the x-axis
+    pyplot.yticks(linspace(min(y), max(y), num=20))  # 20 intervals along the y-axis
+    pyplot.show()
+
+def plot_function2(dataset_index, test_units = [], true_units = [], assignments = {}):
+    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file: # Read from file
+        lines = file.readlines()
+    p = []
+    cord_com = []
+    i = 0
+    community_names = []
+    for line in lines[2:]:  # skip first two lines
+        values = list(map(float, line.split()))  # Convert all values to floats
+        x, y, population = values[1], values[2], int(values[4])
+        cord_com.append((x, y)) # add coordinates
+        p.append(population)  # add populations for each community i
+        community_names.append(i)
+        i += 1
+
+    colors = [
+    'magenta' if name in true_units and name in test_units
+    else 'red' if name in true_units
+    else 'green' if name in test_units
+    else 'black'
+    for name in community_names
+    ]
+    x, y = zip(*cord_com)
+    pyplot.scatter(x, y, color=colors)
+    pyplot.grid(True)
+
+    for i, name in enumerate(community_names):
+        pyplot.annotate(name, (x[i], y[i]), textcoords="offset points", xytext=(0, 5), ha='center', fontsize=8)
+
+    for unit, served_communities in assignments.items():  # assuming this is your dictionary
+        unit_x, unit_y = cord_com[unit]
+        for comm in served_communities:
+            comm_x, comm_y = cord_com[comm]
+            pyplot.plot([unit_x, comm_x], [unit_y, comm_y], linestyle='--', color='gray', linewidth=0.5)
+
+    pyplot.xticks(linspace(min(x), max(x), num=20))  # 20 intervals along the x-axis
+    pyplot.yticks(linspace(min(y), max(y), num=20))  # 20 intervals along the y-axis
+    pyplot.show()
 
 # STAGE 1
 
@@ -500,6 +575,7 @@ def solver_w_ifs(dataset_index):
 
 # SOLVE MORE COMPLEX DATASETS, METHOD 1:
 # PHASES
+
 # Phase 1: tries to find the best feasible solution it can find
 # stops at time limit and writes the current best solution to a file "phase1.sol"
 def phase_1(dataset_index):
@@ -639,8 +715,7 @@ def phase_1(dataset_index):
     # OPTIONAL Parameters:
     # better cuts to enhance bounds, may slow down the process if bounds are already good
     model.setParam("GomoryPasses", 5)
-    # model.setParam("FlowCoverCuts", 2)
-    # model.setParam("MIPFocus", 1)  # focus on finding feasible solutions fast, lower the upper bound,
+    model.setParam("MIPFocus", 1)  # focus on finding feasible solutions fast, lower the upper bound,
     # useful where global optimum takes an infeasible amount of time to find
     model.setParam("ConcurrentMIP", 1) # tells gurobi to use different methods at the same time
     # by assigning CPU cores to different jobs, take the best bound found in any and continue
@@ -808,10 +883,11 @@ def phase_2(dataset_index, best_bound, phase1_val):
     # good if values are too close to each other
     model.setParam("GomoryPasses", 5) # better cuts to enhance bounds
     model.setParam("FlowCoverCuts", 2)
-    model.setParam("MIPFocus", 1)
+    model.setParam("MIPFocus", 1) # optional,
+    # can be used to find better solutions if proving optimality takes an infeasible amount of time
     model.setParam('Presolve', 2) # tells gurobi to do a better presolve
     model.setParam("Heuristics", 0.3) # helps tighten the upper bound faster
-    model.setParam("TimeLimit", 500) # get a good enough solution in reasonable amount of time
+    model.setParam("TimeLimit", 800) # get a good enough solution in reasonable amount of time
     # also useful when gurobi already found the global optimum but is trying to prove optimality
     # and stalls at a certain optimality gap
 
@@ -845,6 +921,7 @@ def phase_2(dataset_index, best_bound, phase1_val):
 
 # SOLVE MORE COMPLEX DATASETS, METHOD 2:
 # APPROXIMATION BY DOWNSCALING
+
 # "sam_apx3_w_ifs1" function reduces the number of variables and constraints
 # by excluding too large weighted distances and too little populations
 
@@ -1157,8 +1234,3 @@ def cvrp_global(dataset_index, units=list(), assignments=dict()):
             route_count += 1
         # Now print or return it
         return model.ObjVal, routes
-
-
-print(phase_1(19))
-# print(phase_2(13, 11182.154971080781, 32021.741863927393))
-

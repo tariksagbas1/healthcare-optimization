@@ -93,10 +93,10 @@ def sam_ifs2(dataset_index):
 
         d_ij.append(row)
 
-    units = [7, 20, 23, 36, 51, 52, 58, 67, 69, 71, 73, 76, 85, 93, 97, 105, 108, 110, 123, 132, 140, 142, 144, 152, 163, 165, 172, 173, 187, 199, 201, 203, 208, 212, 214, 218, 227, 229, 237, 239, 242, 249, 256, 261, 271, 273, 279, 281, 284, 296]
-    cluster_time = 0
+    # units = [0, 14, 21, 25, 28, 31, 33, 35, 42, 46, 62, 63, 80, 86, 90, 92, 99, 106, 115, 122, 128, 142, 150, 153, 163, 168, 172, 184, 186, 189, 191, 195, 197]
+    # cluster_time = 0
 
-    # units, cluster_time = d_cluster(dataset_index)
+    units, cluster_time = d_cluster(dataset_index)
     # Create model
 
     model = Model("Healthcare Placement")
@@ -157,7 +157,7 @@ def sam_ifs2(dataset_index):
             for i in range(n):
                 b_ij[(i, unit_index)] = b_ij[(i, unit_index)].x
 
-        return b_ij, cluster_time + round(time_elapsed, 2), z_val
+        return b_ij, int(cluster_time) + round(time_elapsed, 2), z_val
     else:
         return "Model Is Infeasible"
 def lp_global(dataset_index):
@@ -234,17 +234,19 @@ def lp_global(dataset_index):
     model.setObjective(Z, GRB.MINIMIZE)
 
     # Constraints
+
     for j in range(n):
         model.addConstr(Z >= minimums[j] * (1 - z_j[j]))
 
-    minimums.sort(reverse=True)
-    model.addConstr(Z >= minimums[n//10])
+    # minimums.sort(reverse=True)
+    # model.addConstr(Z >= minimums[n//10])
+
     model.addConstr(Z <= maximums[0][2])
 
     # Z > b_ij * d_ij for every i, j
     for i in range(n):
         for j in range(n):
-            model.addConstr(Z >= p[i] * b_ij[i, j] * d_ij[i][j], name=f"Z_constraint_{i}_{j}")
+            model.addConstr(Z >= p[i] * b_ij[i, j] * d_ij[i][j]  , name=f"Z_constraint_{i}_{j}")
 
     # Capacity constraint, sum(b_ij * p[i]) <= C for every unit. (There can be surplus capacity ?)
     for j in range(n):
@@ -277,7 +279,11 @@ def lp_global(dataset_index):
 
     # START TIMER
     start = time()
-
+    """
+    units, cluster_time = d_cluster(dataset_index)
+    for j in units:
+        model.addConstr(z_j[j] == 1)
+    """
     # Solve Model
     model.optimize()
 
@@ -296,10 +302,12 @@ def lp_global(dataset_index):
             if coms != []:
                 assignments[j] = coms
 
+
         ls = []
         for j in range(n):
-            if z_j[j].x == 1:
+            if z_j[j].x > 0.5:
                 ls.append(j)
+
         z_val = Z.x
         return str(round(time_elapsed, 2)) + " seconds, Z : " + str(Z.x), ls, assignments, z_val
     else:
@@ -389,7 +397,7 @@ def approx_w_ifs(dataset_index):
 
     # Z > b_ij * d_ij for every i, j
     for i in range(n):
-        model.addConstr(Z >= quicksum(p[i] * d_ij[i][j] * b_ij[i, j] for j in range(n)), name=f"Z_constraint_{i}")
+        model.addConstr(Z >= quicksum(p[i] * d_ij[i][j] * b_ij[i, j] for j in range(n) if i != j), name=f"Z_constraint_{i}")
 
     ##################################################################################
 
@@ -426,19 +434,18 @@ def approx_w_ifs(dataset_index):
 
     ######### APPROXIMATION METHOD ##########
 
-    # cluster_index = d_cluster(dataset_index)[0]
-    a, lp_index, b, lp_val = lp_global(dataset_index)
-    """
-    lp_set = set(lp_index)
+    cluster_index = d_cluster(dataset_index)[0]
+    # a, lp_index, b, lp_val = lp_global(dataset_index)
+
+    # lp_set = set(lp_index)
     for j in cluster_index:
-        if j in lp_set:
-            z_j[j].start = 1
-    """
+        z_j[j].start = 1
+
     # model.addConstr(Z >= lp_val)
 
     b_ij_start, ifs_time, z_val = sam_ifs2(dataset_index)
 
-    # model.addConstr(Z <= 20826.979905881697)
+    # model.addConstr(Z <= z_val)
     # Set starting values with IFS
     for i in range(n):
         for j in range(n):
@@ -448,14 +455,17 @@ def approx_w_ifs(dataset_index):
                 b_ij[(i, j)].start = 0
     # MODIFIED #################################################
     # model.setParam("MIPGap", 0.2)
-    model.setParam("MIPFocus", 2)
+    # dataset 11 is such a pain in the .ss. I tried different combinations of parameters but fm I guess
+    # model.setParam("MIPFocus", 1) yeah will definitely speed dataset 11's solution !! :33
     model.setParam("Heuristics", 0.3)
-    # model.setParam("TimeLimit", 600)
+    model.setParam("TimeLimit", 800)
+    model.setParam("NumericFocus", 1)
     # idk anymore
+    # model.setParam("Cuts", 2) nt diddy
     model.setParam("Cutoff", z_val)
     model.setParam("GomoryPasses", 5)
-    model.setParam("FlowCoverCuts", 2)
-    model.setParam("CliqueCuts", 2)
+    # model.setParam("FlowCoverCuts", 2)
+    # model.setParam("CliqueCuts", 2)
 
     # Solve Model
     model.optimize()
@@ -486,7 +496,12 @@ def approx_w_ifs(dataset_index):
     else:
         return "Model Is Infeasible"
 
-# print(lp_global(7))
 
+# lp uses cluster nodes
+# print(lp_global(7))
+# a, secs, z = sam_ifs2(14)
+# print(secs, " seconds")
+# print("Z: ", z)
 # print(sam_ifs2(9)[2])
-# print(approx_w_ifs(9))
+# print(approx_w_ifs(11))
+# print(approx_w_ifs(14)) cok yavas ya

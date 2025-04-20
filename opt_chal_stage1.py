@@ -2,19 +2,25 @@ from gurobipy import Model, GRB, quicksum
 from math import dist, sqrt
 from numpy import percentile, linspace, array
 from time import time
-from matplotlib import pyplot
-from sklearn.cluster import KMeans, AgglomerativeClustering
+from sklearn.cluster import AgglomerativeClustering
 
-# time limit may be 600 seconds (at least for instance 7)
+# STAGE 1
 
-def d_cluster(dataset_index):
+# FINDING A WARM START
+
+# "weighted_clustering" function uses Agglomerative Clustering to determine m clusters
+# m facilities to be deployed
+# returns decided facility indices and time elapsed
+def weighted_clustering(dataset_index):
+    # GET DATA AND CALCULATE NECESSARY PARAMETERS
+
     p = []  # Population of every community
     cord_com = []  # Coordinate of every population [x, y]
     with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file:  # Read from file
         lines = file.readlines()
 
     line1 = lines[0].split()
-    n = int(line1[0])  # Number of
+    n = int(line1[0])  # Number of nodes
     m = int(line1[1])  # Number of healthcare units to place
 
     for line in lines[2:]:  # skip first two lines
@@ -32,42 +38,48 @@ def d_cluster(dataset_index):
             row.append(distance)
 
         d_ij.append(row)
+
+    # Turn into weighted-distance matrix
+    # weight approximation choice: geometric mean of populations
 
     w_d_ij = []
     for i in range(n):
         row = []
         for j in range(n):
-            row.append(d_ij[i][j] * ((p[i]*p[j])**0.5))
+            row.append(d_ij[i][j] * ((p[i] * p[j]) ** 0.5))
 
         w_d_ij.append(row)
 
     start = time()
 
-    # Step 1: Fit clustering on distance matrix
+    # Fit clustering on weighted-distance matrix
     import numpy as np
     w_d_ij = np.array(w_d_ij)
     clustering = AgglomerativeClustering(n_clusters=m, metric='precomputed', linkage='average')
-    labels = clustering.fit_predict(w_d_ij)  # D is your (n x n) distance matrix
+    labels = clustering.fit_predict(w_d_ij)
 
-    # Step 2: Group node indices by cluster
+    # Group node indices by cluster
     clusters = [[] for _ in range(m)]
     for idx, label in enumerate(labels):
         clusters[label].append(idx)
 
-    # Step 3: For each cluster, find the most "central" node
-    # (i.e., the one with minimal total distance to all others in its cluster)
-    closest_nodes = []
+    # Find the central node for each cluster
+    central_nodes = []
 
     for group in clusters:
         submatrix = w_d_ij[np.ix_(group, group)]  # cluster's intra-distance matrix
         total_dist = submatrix.sum(axis=1)  # total distance from each node to others
         best_idx_in_cluster = group[np.argmin(total_dist)]
-        closest_nodes.append(best_idx_in_cluster)
+        central_nodes.append(best_idx_in_cluster)
     end = time()
-    return closest_nodes, round(end - start, 2)
+    return central_nodes, round(end - start, 2)
 
-def sam_ifs2(dataset_index):
-    # INITIAL DATA
+# "ifs_by_clustering" function uses the nodes selected in "weighted_clustering" and
+# solves for it
+# returns b_ij binary variables, time elapsed and objective value
+# this function is used as the solver for datasets with more than 1000 nodes.
+def ifs_by_clusters(dataset_index):
+    # DATA
 
     p = []  # Population of every community
     cord_com = []  # Coordinate of every population [x, y]
@@ -75,7 +87,7 @@ def sam_ifs2(dataset_index):
         lines = file.readlines()
 
     line1 = lines[0].split()
-    n = int(line1[0])  # Number of
+    n = int(line1[0])  # Number of nodes
     m = int(line1[1])  # Number of healthcare units to place
 
     for line in lines[2:]:  # skip first two lines
@@ -94,15 +106,14 @@ def sam_ifs2(dataset_index):
 
         d_ij.append(row)
 
-    # units = [9, 13, 14, 24, 25, 26, 29, 38, 40, 60, 63, 66, 74, 75, 82, 84, 87, 93, 95, 101, 107, 112, 115, 117, 122, 132, 144, 147, 155, 157, 161, 163, 170, 172, 175, 180, 182, 215, 228, 232, 237, 241, 242, 248, 249, 253, 256, 267, 268, 299]
-    # cluster_time = 0
+    # Get unit indices from clustering
+    units, cluster_time = weighted_clustering(dataset_index)
 
-    units, cluster_time = d_cluster(dataset_index)
     # Create model
 
     model = Model("Healthcare Placement")
 
-    # Decision variables
+    # DECISION VARIABLES
 
     b_ij = {}  # b_ij = 1 if community i is served by unit on j
     for unit_index in units:
@@ -114,25 +125,27 @@ def sam_ifs2(dataset_index):
 
     model.update()
 
+    # OBJECTIVE FUNCTION
+
     model.setObjective(Z, GRB.MINIMIZE)
 
-    # Constraints
+    # CONSTRAINTS
 
-    # Z constraint
+    # Z constraints
     for unit_index in units:
         for i in range(n):
             if i != unit_index:
                 model.addConstr(Z >= b_ij[(i, unit_index)] * d_ij[i][unit_index] * p[i],
                                 name=f"Z_constraint_{i}_{unit_index}")
 
-    # Single allocation constraint, sum(b_ij) == 1 for every population
+    # A population can only be served by one facility
     for i in range(n):
         variables = 0.0
         for unit_index in units:
             variables += b_ij[(i, unit_index)]
         model.addConstr(variables == 1, name=f"single_allocation_constraint_{i}")
 
-    # Capacity constraint
+    # Capacity constraints
     for unit_index in units:
         variables = 0.0
         for i in range(n):
@@ -162,6 +175,8 @@ def sam_ifs2(dataset_index):
     else:
         return "Model Is Infeasible"
 
+# solves partially relaxed problem, finds global optimum
+# b_ij: BINARY -> CONTINUOUS, lb=0, ub=1
 def lp_global(dataset_index):
     # INITIAL DATA
 
@@ -262,8 +277,7 @@ def lp_global(dataset_index):
             sum += b_ij[(i, j)]
         model.addConstr(1 == sum, name=f"Population_constraint{i}")
 
-    # Total unit constraint, sum(x_i) == m
-
+    # A node can only serve if a facility is opened there
     g_j = []
     for j in range(n):
         variables = 0.0
@@ -272,6 +286,7 @@ def lp_global(dataset_index):
         g_j.append(variables)
         model.addConstr(g_j[j] <= M * z_j[j])
 
+    # Total unit constraint, sum(z_j) == m
     sum = 0.0
     for j in range(n):
         sum += z_j[j]
@@ -288,14 +303,14 @@ def lp_global(dataset_index):
     end = time()
     time_elapsed = end - start
     if model.status == GRB.OPTIMAL:
+        # get the solution
         assignments = {}
         for j in range(n):
             coms = []
             for i in range(n):
-                if b_ij[(i, j)]:  ################## MODIFIED ####################
-                    if b_ij[(i, j)].x != 0:
-                        coms.append(i)
-            if coms != []:
+                if b_ij[(i, j)].x != 0:
+                    coms.append(i)
+            if coms:
                 assignments[j] = coms
 
         ls = []
@@ -303,13 +318,14 @@ def lp_global(dataset_index):
             if z_j[j].x == 1:
                 ls.append(j)
         z_val = Z.x
-        return str(round(time_elapsed, 2)) + " seconds, Z : " + str(Z.x), ls, assignments, z_val
+        return round(time_elapsed, 2), " seconds, Z : " , Z.x, ls, assignments
     else:
         return "Model Is Infeasible"
 
+# SOLVING
 
-def phase_1(dataset_index):
-    # INITIAL DATA
+def solver_w_ifs(dataset_index):
+    # DATA
 
     p = []  # Population of every community
     cord_com = []  # Coordinate of every population [x, y]
@@ -317,7 +333,7 @@ def phase_1(dataset_index):
         lines = file.readlines()
 
     line1 = lines[0].split()
-    n = int(line1[0])  # Number of
+    n = int(line1[0])  # Number of nodes
     m = int(line1[1])  # Number of healthcare units to place
     M = n
 
@@ -336,6 +352,9 @@ def phase_1(dataset_index):
             row.append(distance)
         d_ij.append(row)
 
+    # Create lists "minimums" and "maximums"
+    # that hold minimum weighted distance to node i at element i
+    # and maximum weighted distance to node i at element i, respectively
     minimums = []
     for i in range(n):
         weight_dist = set()
@@ -356,327 +375,6 @@ def phase_1(dataset_index):
                     index = j
         maximums.append((i, index, max_val))
     maximums.sort(key=lambda x: x[2], reverse=True)
-
-    # Create model
-
-    model = Model("Healthcare Placement")
-
-    # DECISION VARIABLES
-
-    b_ij = {}
-    for i in range(n):
-        for j in range(n):
-            b_ij[(i, j)] = model.addVar(vtype=GRB.BINARY, name=f"b_{i}_{j}")
-
-    # z_j: 1 if facility is opened at node j. 0 o/w
-    z_j = []
-    for j in range(n):
-        z_j.append(model.addVar(vtype=GRB.BINARY, name=f"z_{j}"))
-
-    # Z: auxiliary variable
-    Z = model.addVar(vtype=GRB.CONTINUOUS, name="Z")
-
-    model.update()
-
-    model.setObjective(Z, GRB.MINIMIZE)
-
-    # CONSTRAINTS
-
-    # modified Z constraint
-    # Z > (p_i * b_ij * d_ij sum over all j) for every i
-    for i in range(n):
-        model.addConstr(Z >= quicksum(p[i] * d_ij[i][j] * b_ij[i, j] for j in range(n)), name=f"Z_constraint_{i}")
-
-    # these are optional
-    for j in range(n):
-        model.addConstr(Z >= minimums[j] * (1 - z_j[j]))
-
-    model.addConstr(Z <= maximums[0][2])
-
-    # Capacity constraint, sum(b_ij * p[i]) <= C for every unit. (There can be surplus capacity ?)
-    for j in range(n):
-        variables = quicksum(b_ij[(i, j)] * p[i] for i in range(n))
-        model.addConstr(variables <= C * z_j[j], name=f"capacity_constraint_{i}")
-
-    # Population constraint
-    for i in range(n):
-        exprs = quicksum(b_ij[(i, j)] for j in range(n))
-        model.addConstr(exprs == 1, name=f"Population_constraint{i}")
-
-    # Total unit constraint, sum(x_i) == m
-
-    for j in range(n):
-        g_j = quicksum(b_ij[(i, j)] for i in range(n))
-        model.addConstr(g_j <= M * z_j[j])
-
-    tot = quicksum(z_j[j] for j in range(n))
-    model.addConstr(tot == m, name=f"unit_constraint")
-
-    # START TIMER
-    start = time()
-
-    cluster_index, cluster_time = d_cluster(dataset_index)
-    # a, lp_index, b, lp_val = lp_global(dataset_index)
-
-    # model.addConstr(Z >= lp_val)
-
-    b_ij_start, ifs_time, z_val = sam_ifs2(dataset_index)
-
-    # Set starting values with IFS
-    for i in range(n):
-        for j in range(n):
-            b_ij[(i, j)].Start = b_ij_start.get((i, j), 0)
-
-
-    # lp_set = set(lp_index)
-    for j in cluster_index:
-        # if j in lp_set:
-        z_j[j].start = 1
-
-
-    # PARAMETERS
-    model.setParam("MIPGap", 0.2)
-    model.setParam("Cutoff", z_val * (1 + 0.0001))
-    model.setParam("NumericFocus", 1)
-    model.setParam("Heuristics", 0.5)
-    model.setParam("ConcurrentMIP", 1)  #############  TRIAL ###############
-    # cut parameters made dataset 7 faster
-    model.setParam("TimeLimit", 300) # optional
-    model.setParam("MIPFocus", 1)   # optional
-
-    # Solve Model
-    model.optimize()
-    print()
-
-    # END TIMER
-    end = time()
-
-    time_elapsed = end - start
-    if model.status == GRB.OPTIMAL or model.status == GRB.TIME_LIMIT:
-        assignments = {}
-        for j in range(n):
-            coms = []
-            for i in range(n):
-                if b_ij[(i, j)]:  ################## MODIFIED ####################
-                    if b_ij[(i, j)].x != 0:
-                        coms.append(i)
-            if coms != []:
-                assignments[j] = coms
-
-        ls = []
-        for j in range(n):
-            if z_j[j].x > 0.5: ############ MODIFIED ##############################
-                ls.append(j)
-
-        model.write("phase1.sol")
-        return f"IFS took {ifs_time + cluster_time} seconds. Total time: " + str(round(time_elapsed, 2)) + " seconds, Z : " + str(
-            Z.x), ls, assignments
-    else:
-        return "Model Is Infeasible"
-
-def phase_2(dataset_index):
-    # INITIAL DATA
-
-    p = []  # Population of every community
-    cord_com = []  # Coordinate of every population [x, y]
-    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file:  # Read from file
-        lines = file.readlines()
-
-    line1 = lines[0].split()
-    n = int(line1[0])  # Number of
-    m = int(line1[1])  # Number of healthcare units to place
-    M = n
-
-    for line in lines[2:]:  # skip first two lines
-        values = list(map(float, line.split()))  # Convert all values to floats
-        x, y, C, population = values[1], values[2], values[3], int(values[4])
-        cord_com.append([x, y])  # add coordinates
-        p.append(population)  # add populations for each community i
-
-    # Calculate distances
-    d_ij = []
-    for x1, y1 in cord_com:
-        row = []
-        for x2, y2 in cord_com:
-            distance = dist((x1, y1), (x2, y2))
-            row.append(distance)
-        d_ij.append(row)
-
-    minimums = []
-    for i in range(n):
-        weight_dist = set()
-        for j in range(n):
-            if i != j:
-                weight_dist.add(p[i] * d_ij[i][j])
-        minimums.append(min(weight_dist))
-
-    maximums = []
-    for i in range(n):
-        index = -1
-        max_val = -1
-        for j in range(n):
-            if i != j:
-                val = p[i] * d_ij[i][j]
-                if val > max_val:
-                    max_val = val
-                    index = j
-        maximums.append((i, index, max_val))
-    maximums.sort(key=lambda x: x[2], reverse=True)
-
-    # Create model
-
-    model = Model("Healthcare Placement")
-
-    # DECISION VARIABLES
-
-    b_ij = {}
-    for i in range(n):
-        for j in range(n):
-            b_ij[(i, j)] = model.addVar(vtype=GRB.BINARY, name=f"b_{i}_{j}")
-
-    # z_j: 1 if facility is opened at node j. 0 o/w
-    z_j = []
-    for j in range(n):
-        z_j.append(model.addVar(vtype=GRB.BINARY, name=f"z_{j}"))
-
-    # Z: auxiliary variable
-    Z = model.addVar(vtype=GRB.CONTINUOUS, name="Z")
-
-    model.update()
-
-    model.setObjective(Z, GRB.MINIMIZE)
-
-    # CONSTRAINTS
-
-    # modified Z constraint
-    # Z > (p_i * b_ij * d_ij sum over all j) for every i
-    for i in range(n):
-        model.addConstr(Z >= quicksum(p[i] * d_ij[i][j] * b_ij[i, j] for j in range(n)), name=f"Z_constraint_{i}")
-
-
-    # these are optional
-    for j in range(n):
-        model.addConstr(Z >= minimums[j] * (1 - z_j[j]))
-
-    model.addConstr(Z <= maximums[0][2])
-
-
-    # Capacity constraint, sum(b_ij * p[i]) <= C for every unit. (There can be surplus capacity ?)
-    for j in range(n):
-        variables = quicksum(b_ij[(i, j)] * p[i] for i in range(n))
-        model.addConstr(variables <= C * z_j[j], name=f"capacity_constraint_{i}")
-
-    # Population constraint
-    for i in range(n):
-        exprs = quicksum(b_ij[(i, j)] for j in range(n))
-        model.addConstr(exprs == 1, name=f"Population_constraint{i}")
-
-    # Total unit constraint, sum(x_i) == m
-
-    for j in range(n):
-        g_j = quicksum(b_ij[(i, j)] for i in range(n))
-        model.addConstr(g_j <= M * z_j[j])
-
-    tot = quicksum(z_j[j] for j in range(n))
-    model.addConstr(tot == m, name=f"unit_constraint")
-
-    model.addConstr(Z >= 9082.969442261)
-
-    # START TIMER
-    start = time()
-
-    # Set starting values
-
-    model.read("phase1.sol")
-
-    # Parameters
-    # global phase1_val
-    model.setParam("Cutoff", 27438.707841296025 * (1 + 0.0001))
-    model.setParam("NumericFocus", 1)
-    # model.setParam("Cuts", 2)
-    model.setParam("GomoryPasses", 5)
-    model.setParam('Presolve', 2)
-    # model.setParam("ConcurrentMIP", 1)
-    # model.setParam("MIPFocus", 2) # maybe
-    model.setParam("Heuristics", 0.5) # or unchanged
-
-    model.setParam("TimeLimit", 700)
-
-    # Solve Model
-    model.optimize()
-    print()
-
-    # END TIMER
-    end = time()
-
-    time_elapsed = end - start
-    if model.status == GRB.OPTIMAL or model.status == GRB.TIME_LIMIT:
-        assignments = {}
-        for j in range(n):
-            coms = []
-            for i in range(n):
-                if b_ij[(i, j)]:  ################## MODIFIED ####################
-                    if b_ij[(i, j)].x != 0:
-                        coms.append(i)
-            if coms != []:
-                assignments[j] = coms
-
-        ls = []
-        for j in range(n):
-            if z_j[j].x == 1:
-                ls.append(j)
-
-        return f"Total time: " + str(round(time_elapsed, 2)) + " seconds, Z : " + str(
-            Z.x), ls, assignments
-    else:
-        return "Model Is Infeasible"
-
-def sam_ifs(dataset_index):
-    # INITIAL DATA
-
-    p = []  # Population of every community
-    cord_com = []  # Coordinate of every population [x, y]
-    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file:  # Read from file
-        lines = file.readlines()
-
-    line1 = lines[0].split()
-    n = int(line1[0])  # Number of
-    m = int(line1[1])  # Number of healthcare units to place
-
-    for line in lines[2:]:  # skip first two lines
-        values = list(map(float, line.split()))  # Convert all values to floats
-        x, y, C, population = values[1], values[2], values[3], int(values[4])
-        cord_com.append([x, y])  # add coordinates
-        p.append(population)  # add populations for each community i
-
-    # Calculate distances
-    d_ij = []
-    for x1, y1 in cord_com:
-        row = []
-        for x2, y2 in cord_com:
-            distance = dist((x1, y1), (x2, y2))
-            row.append(distance)
-
-        d_ij.append(row)
-
-    units, cluster_time = d_cluster(dataset_index)
-
-    maximums = []
-    for i in range(n):
-        index = -1
-        max_val = -1
-        for j in units:
-            if i != j:
-                val = p[i] * d_ij[i][j]
-                if val > max_val:
-                    max_val = val
-                    index = j
-        maximums.append((i, index, max_val))
-    maximums.sort(key=lambda x: x[2], reverse=True)
-
-    # units = [9, 13, 14, 24, 25, 26, 29, 38, 40, 60, 63, 66, 74, 75, 82, 84, 87, 93, 95, 101, 107, 112, 115, 117, 122, 132, 144, 147, 155, 157, 161, 163, 170, 172, 175, 180, 182, 215, 228, 232, 237, 241, 242, 248, 249, 253, 256, 267, 268, 299]
-    # cluster_time = 0
-
 
     # Create model
 
@@ -684,97 +382,476 @@ def sam_ifs(dataset_index):
 
     # Decision variables
 
-    b_ij = {}  # b_ij = 1 if community i is served by unit on j
-    for unit_index in units:
-        for i in range(n):
-            b_ij[(i, unit_index)] = model.addVar(vtype=GRB.BINARY, name=f"b_{i}_{unit_index}")
+    # b_ij: 1 if population i is served by unit on j, 0 o/w
+    b_ij = {}
+    for i in range(n):
+        for j in range(n):
+            b_ij[(i, j)] = model.addVar(vtype=GRB.BINARY, name=f"b_{i}_{j}")
+
+    # z_j: 1 if a facility is opened at node j, 0 o/w
+    z_j = []
+    for j in range(n):
+        z_j.append(model.addVar(vtype=GRB.BINARY, name=f"z_{j}"))
 
     # Z: auxiliary variable
     Z = model.addVar(vtype=GRB.CONTINUOUS, name="Z")
 
-    pop_served = model.addVar(name="TotalPopulationServed")
-
     model.update()
 
-    alpha = 10000
-    beta = 1
-    model.setObjective(
-        -alpha * pop_served + beta * Z,
-        GRB.MINIMIZE
-    )
-    # model.setObjective(Z, GRB.MINIMIZE)
+    model.setObjective(Z, GRB.MINIMIZE)
 
     # Constraints
 
+    # Z must be larger than the maximum of the minimum weighted distances to nodes
+    # since every node must be served
+    for j in range(n):
+        model.addConstr(Z >= minimums[j] * (1 - z_j[j]))
+
+    # Z is smaller than the maximum population weighted distance possibly served
+    model.addConstr(Z <= maximums[0][2])
+
+
+    # Z > sum(p[i] * b_ij * d_ij for every j) for every i
     for i in range(n):
-        for unit_index in units:
-            tot_served = p[i] * b_ij[(i,unit_index)]
-    model.addConstr(pop_served == tot_served)
+        model.addConstr(Z >= quicksum(p[i] * d_ij[i][j] * b_ij[i, j] for j in range(n) if i != j), name=f"Z_constraint_{i}")
 
-    # model.addConstr(Z <= maximums[n//10][2])
 
-    # Z constraint
-    for unit_index in units:
-        for i in range(n):
-            if i != unit_index:
-                model.addConstr(Z >= b_ij[(i, unit_index)] * d_ij[i][unit_index] * p[i],
-                                name=f"Z_constraint_{i}_{unit_index}")
-
-    # Single allocation constraint, sum(b_ij) == 1 for every population
-    for i in range(n):
-        variables = 0.0
-        for unit_index in units:
-            variables += b_ij[(i, unit_index)]
-        model.addConstr(variables <= 1, name=f"single_allocation_constraint_{i}")
-
-    # Capacity constraint
-    for unit_index in units:
+    # Capacity constraint, sum(b_ij * p[i]) <= C * z_j for every unit. (surplus capacity allowed)
+    for j in range(n):
         variables = 0.0
         for i in range(n):
-            variables += b_ij[(i, unit_index)] * p[i]
-        model.addConstr(variables <= C, name=f"capacity_constraint_{unit_index}")
+            variables += b_ij[(i, j)] * p[i]
+        model.addConstr(variables <= C * z_j[j], name=f"capacity_constraint_{j}")
 
-    model.update()
-    model.setParam(GRB.Param.MIPGap, 0.05)
-    tot_pop = sum(p[i] for i in range(n))
-    tot_capacity = C*m
+    # Population constraint
+    for i in range(n):
+        sum = 0.0
+        for j in range(n):
+            sum += b_ij[(i, j)]
+        model.addConstr(1 == sum, name=f"Population_constraint{i}")
+
+    # A node can only serve if a facility is opened there.
+    # using big M
+    g_j = []
+    for j in range(n):
+        variables = 0.0
+        for i in range(n):
+            variables += b_ij[(i, j)]
+        g_j.append(variables)
+        model.addConstr(g_j[j] <= M * z_j[j])
+
+    # Total unit constraint, sum(z_j) == m
+    sum = 0.0
+    for j in range(n):
+        sum += z_j[j]
+    model.addConstr(sum == m, name=f"unit_constraint")
 
     # START TIMER
     start = time()
 
+    # Get starting facility locations
+
+    cluster_index = weighted_clustering(dataset_index)[0]
+
+    for j in cluster_index:
+        z_j[j].start = 1
+
+    # Set LP objective value as lowerbound
+    # LP is sometimes not the worth the time
+    a, b, lp_val, lp_units, d = lp_global(dataset_index)
+    model.addConstr(Z >= lp_val)
+
+    # Get starting solution
+    b_ij_start, ifs_time, z_val = ifs_by_clusters(dataset_index)
+
+    # Set starting values with IFS
+    for i in range(n):
+        for j in range(n):
+            if (i, j) in b_ij_start:
+                b_ij[(i, j)].start = b_ij_start[(i, j)]
+            else:
+                b_ij[(i, j)].start = 0
+
+    # DEFAULT PARAMETERS
+    # Modify if necessary, some datasets are solved better/faster with different parameters
+
+    model.setParam("Heuristics", 0.3) # helps tighten the upper bound faster
+    model.setParam("TimeLimit", 800) # get a good enough solution in reasonable amount of time
+    model.setParam("NumericFocus", 1) # makes gurobi more careful with numbers,
+    # good if values are too close to each other
+    model.setParam("Cutoff", z_val * (1 + 0.0001)) # prune any solution worse than ifs objective value
+    model.setParam("GomoryPasses", 5) # better cuts to enhance bounds
+
     # Solve Model
     model.optimize()
-
     print()
+
     # END TIMER
     end = time()
 
     time_elapsed = end - start
     if model.status == GRB.OPTIMAL or model.status == GRB.TIME_LIMIT:
+        # get the solution
         assignments = {}
-        for unit_index in units:
+        for j in range(n):
             coms = []
-            for i in range(n):  ################## MODIFIED ####################
-                if b_ij[(i, unit_index)].x != 0:
+            for i in range(n):
+                if b_ij[(i, j)].x > 0.5:
                     coms.append(i)
-            if coms != []:
-                assignments[unit_index] = coms
+            if coms:
+                assignments[j] = coms
 
+        ls = []
+        for j in range(n):
+            if z_j[j].x == 1:
+                ls.append(j)
 
-        return f"Total time: " + str(round(time_elapsed, 2)) + " seconds, Z : " + str(
-            Z.x), pop_served.x, units, assignments
-    elif model.SolCount > 0:
-        assignments = {}
-        for unit_index in units:
-            coms = []
-            for i in range(n):  ################## MODIFIED ####################
-                if b_ij[(i, unit_index)].x != 0:
-                    coms.append(i)
-            if coms != []:
-                assignments[unit_index] = coms
-        return model.SolCount, model.ObjVal
+        return f"IFS took {ifs_time} seconds. Total time: " + str(round(time_elapsed, 2)) + " seconds, Z : ", Z.x, ls, assignments
     else:
-        return "Model Is Infeasible : Total Population:", tot_pop, "Available capacity:", tot_capacity
+        return "Model Is Infeasible"
 
-# print(phase_2(17))
-# print(phase_2(19))
+# SOLVE MORE COMPLEX DATASETS: PHASES WITH DIFFERENT PARAMETERS
+# Phase 1: tries to find the best feasible solution it can find
+# stops at time limit and writes the current best solution to a file "phase1.sol"
+def phase_1(dataset_index):
+    # DATA
+
+    p = []  # Population of every community
+    cord_com = []  # Coordinate of every population [x, y]
+    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file:  # Read from file
+        lines = file.readlines()
+
+    line1 = lines[0].split()
+    n = int(line1[0])  # Number of nodes
+    m = int(line1[1])  # Number of healthcare units to place
+    M = n
+
+    for line in lines[2:]:  # skip first two lines
+        values = list(map(float, line.split()))  # Convert all values to floats
+        x, y, C, population = values[1], values[2], values[3], int(values[4])
+        cord_com.append([x, y])  # add coordinates
+        p.append(population)  # add populations for each community i
+
+    # Calculate distances
+    d_ij = []
+    for x1, y1 in cord_com:
+        row = []
+        for x2, y2 in cord_com:
+            distance = dist((x1, y1), (x2, y2))
+            row.append(distance)
+        d_ij.append(row)
+
+    # Create lists "minimums" and "maximums"
+    # that hold minimum weighted distance to node i at element i
+    # and maximum weighted distance to node i at element i, respectively
+    minimums = []
+    for i in range(n):
+        weight_dist = set()
+        for j in range(n):
+            if i != j:
+                weight_dist.add(p[i] * d_ij[i][j])
+        minimums.append(min(weight_dist))
+
+    maximums = []
+    for i in range(n):
+        index = -1
+        max_val = -1
+        for j in range(n):
+            if i != j:
+                val = p[i] * d_ij[i][j]
+                if val > max_val:
+                    max_val = val
+                    index = j
+        maximums.append((i, index, max_val))
+    maximums.sort(key=lambda x: x[2], reverse=True)
+
+    # Create model
+
+    model = Model("Healthcare Placement")
+
+    # DECISION VARIABLES
+
+    # b_ij: 1 if node i is served by facility at node j, 0 o/w
+    b_ij = {}
+    for i in range(n):
+        for j in range(n):
+            b_ij[(i, j)] = model.addVar(vtype=GRB.BINARY, name=f"b_{i}_{j}")
+
+    # z_j: 1 if facility is opened at node j, 0 o/w
+    z_j = []
+    for j in range(n):
+        z_j.append(model.addVar(vtype=GRB.BINARY, name=f"z_{j}"))
+
+    # Z: auxiliary variable
+    Z = model.addVar(vtype=GRB.CONTINUOUS, name="Z")
+
+    model.update()
+
+    model.setObjective(Z, GRB.MINIMIZE)
+
+    # CONSTRAINTS
+
+    # Z > (p_i * b_ij * d_ij sum over all j) for every i
+    for i in range(n):
+        model.addConstr(Z >= quicksum(p[i] * d_ij[i][j] * b_ij[i, j] for j in range(n)), name=f"Z_constraint_{i}")
+
+    # Z must be larger than the maximum of the minimum weighted distances to nodes
+    # since every node must be served
+    for j in range(n):
+        model.addConstr(Z >= minimums[j] * (1 - z_j[j]))
+
+    # Z is smaller than the largest population weighted distance possibly served
+    model.addConstr(Z <= maximums[0][2])
+
+    # Capacity constraint, sum(b_ij * p[i]) <= C * z_j for every unit. (surplus capacity allowed)
+    for j in range(n):
+        variables = quicksum(b_ij[(i, j)] * p[i] for i in range(n))
+        model.addConstr(variables <= C * z_j[j], name=f"capacity_constraint_{i}")
+
+    # Population constraint
+    for i in range(n):
+        exprs = quicksum(b_ij[(i, j)] for j in range(n))
+        model.addConstr(exprs == 1, name=f"Population_constraint{i}")
+
+    # A node can only serve if a facility is opened there
+    for j in range(n):
+        g_j = quicksum(b_ij[(i, j)] for i in range(n))
+        model.addConstr(g_j <= M * z_j[j])
+
+    # Total unit constraint, sum(z_j) == m
+    tot = quicksum(z_j[j] for j in range(n))
+    model.addConstr(tot == m, name=f"unit_constraint")
+
+    # START TIMER
+    start = time()
+
+    # Get starting facility locations
+    cluster_index, cluster_time = weighted_clustering(dataset_index)
+    for j in cluster_index:
+        z_j[j].start = 1
+
+    # Get starting solution
+    b_ij_start, ifs_time, z_val = ifs_by_clusters(dataset_index)
+
+    # Set starting values with IFS
+    for i in range(n):
+        for j in range(n):
+            b_ij[(i, j)].Start = b_ij_start.get((i, j), 0)
+
+    # DEFAULT PARAMETERS
+    # Modify if necessary, some datasets are solved better/faster with different parameters
+
+    model.setParam("Cutoff", z_val * (1 + 0.0001)) # prune any solution worse than ifs objective value
+    model.setParam("TimeLimit", 300) # get a good enough solution in reasonable amount of time
+    model.setParam("NumericFocus", 1) # makes gurobi more careful with numbers,
+    # good if values are too close to each other
+    model.setParam("Heuristics", 0.3) # helps tighten the upper bound faster
+
+    # OPTIONAL Parameters:
+    # better cuts to enhance bounds, may slow down the process if bounds are already good
+    model.setParam("GomoryPasses", 5)
+    model.setParam("FlowCoverCuts", 2)
+    model.setParam("MIPFocus", 1)  # focus on finding feasible solutions fast, lower the upper bound,
+    # useful where global optimum takes an infeasible amount of time to find
+    model.setParam("ConcurrentMIP", 1) # use different methods at the same time
+    # by assigning CPU cores to different jobs, take the best bound found in any and continue
+
+    # Solve Model
+    model.optimize()
+    print()
+
+    # END TIMER
+    end = time()
+
+    time_elapsed = end - start
+    if model.status == GRB.OPTIMAL or model.status == GRB.TIME_LIMIT:
+        # get the solution
+        assignments = {}
+        for j in range(n):
+            coms = []
+            for i in range(n):
+                if b_ij[(i, j)].x > 0.5:
+                    coms.append(i)
+            if coms:
+                assignments[j] = coms
+
+        ls = []
+        for j in range(n):
+            if z_j[j].x > 0.5:
+                ls.append(j)
+
+        # store the solution
+        model.write("phase1.sol")
+
+        return f"IFS took {ifs_time + cluster_time} seconds. Total time: " + str(round(time_elapsed, 2)) + " seconds, Z : ", \
+            Z.x, "Best bound: ", model.ObjBound, ls, assignments
+    else:
+        return "Model Is Infeasible"
+
+# Phase 2: reads ifs from "phase1.sol"
+# and tries to get close to optimality as much as possible
+# stops at time limit and returns the best solution found
+def phase_2(dataset_index, best_bound, phase1_val):
+    # DATA
+
+    p = []  # Population of every community
+    cord_com = []  # Coordinate of every population [x, y]
+    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file:  # Read from file
+        lines = file.readlines()
+
+    line1 = lines[0].split()
+    n = int(line1[0])  # Number of nodes
+    m = int(line1[1])  # Number of healthcare units to place
+    M = n
+
+    for line in lines[2:]:  # skip first two lines
+        values = list(map(float, line.split()))  # Convert all values to floats
+        x, y, C, population = values[1], values[2], values[3], int(values[4])
+        cord_com.append([x, y])  # add coordinates
+        p.append(population)  # add populations for each community i
+
+    # Calculate distances
+    d_ij = []
+    for x1, y1 in cord_com:
+        row = []
+        for x2, y2 in cord_com:
+            distance = dist((x1, y1), (x2, y2))
+            row.append(distance)
+        d_ij.append(row)
+
+    # Create lists "minimums" and "maximums"
+    # that hold minimum weighted distance to node i at element i
+    # and maximum weighted distance to node i at element i, respectively
+    minimums = []
+    for i in range(n):
+        weight_dist = set()
+        for j in range(n):
+            if i != j:
+                weight_dist.add(p[i] * d_ij[i][j])
+        minimums.append(min(weight_dist))
+
+    maximums = []
+    for i in range(n):
+        index = -1
+        max_val = -1
+        for j in range(n):
+            if i != j:
+                val = p[i] * d_ij[i][j]
+                if val > max_val:
+                    max_val = val
+                    index = j
+        maximums.append((i, index, max_val))
+    maximums.sort(key=lambda x: x[2], reverse=True)
+
+    # Create model
+
+    model = Model("Healthcare Placement")
+
+    # DECISION VARIABLES
+
+    # b_ij: 1 if node i is served by facility at node j, 0 o/w
+    b_ij = {}
+    for i in range(n):
+        for j in range(n):
+            b_ij[(i, j)] = model.addVar(vtype=GRB.BINARY, name=f"b_{i}_{j}")
+
+    # z_j: 1 if facility is opened at node j, 0 o/w
+    z_j = []
+    for j in range(n):
+        z_j.append(model.addVar(vtype=GRB.BINARY, name=f"z_{j}"))
+
+    # Z: auxiliary variable
+    Z = model.addVar(vtype=GRB.CONTINUOUS, name="Z")
+
+    model.update()
+
+    model.setObjective(Z, GRB.MINIMIZE)
+
+    # CONSTRAINTS
+
+    # Z > (p_i * b_ij * d_ij sum over all j) for every i
+    for i in range(n):
+        model.addConstr(Z >= quicksum(p[i] * d_ij[i][j] * b_ij[i, j] for j in range(n)), name=f"Z_constraint_{i}")
+
+    # Z must be larger than the maximum of the minimum weighted distances to nodes
+    # since every node must be served
+    for j in range(n):
+        model.addConstr(Z >= minimums[j] * (1 - z_j[j]))
+
+    # Z is smaller than the largest population weighted distance possibly served
+    model.addConstr(Z <= maximums[0][2])
+
+
+    # Capacity constraint, sum(b_ij * p[i]) <= C * z_j for every unit. (surplus capacity allowed)
+    for j in range(n):
+        variables = quicksum(b_ij[(i, j)] * p[i] for i in range(n))
+        model.addConstr(variables <= C * z_j[j], name=f"capacity_constraint_{i}")
+
+    # Population constraint
+    for i in range(n):
+        exprs = quicksum(b_ij[(i, j)] for j in range(n))
+        model.addConstr(exprs == 1, name=f"Population_constraint{i}")
+
+    # A node can only serve if a facility is opened there
+    for j in range(n):
+        g_j = quicksum(b_ij[(i, j)] for i in range(n))
+        model.addConstr(g_j <= M * z_j[j])
+
+
+    # Total unit constraint, sum(z_j) == m
+    tot = quicksum(z_j[j] for j in range(n))
+    model.addConstr(tot == m, name=f"unit_constraint")
+
+    # Set the phase 1 best bound as lower bound
+    model.addConstr(Z >= best_bound)
+
+    # START TIMER
+    start = time()
+
+    # Get starting solution
+    model.read("phase1.sol")
+
+    # DEFAULT PARAMETERS
+    # Modify if necessary, some datasets are solved better/faster with different parameters
+
+    model.setParam("Cutoff", phase1_val * (1 + 0.0001)) # prune any solution worse than phase 1 objective value
+    model.setParam("NumericFocus", 1) # makes gurobi more careful with numbers,
+    # good if values are too close to each other
+    model.setParam("GomoryPasses", 5) # better cuts to enhance bounds
+    model.setParam('Presolve', 2) # tells gurobi to do a better presolve
+    model.setParam("Heuristics", 0.3) # helps tighten the upper bound faster
+    model.setParam("TimeLimit", 800) # get a good enough solution in reasonable amount of time
+    # also useful when gurobi already found the global optimum but is trying to prove optimality
+    # and stalls at a certain optimality gap
+
+    # Solve Model
+    model.optimize()
+    print()
+
+    # END TIMER
+    end = time()
+
+    time_elapsed = end - start
+    if model.status == GRB.OPTIMAL or model.status == GRB.TIME_LIMIT:
+        # get the solution
+        assignments = {}
+        for j in range(n):
+            coms = []
+            for i in range(n):
+                if b_ij[(i, j)].x != 0:
+                    coms.append(i)
+            if coms:
+                assignments[j] = coms
+
+        ls = []
+        for j in range(n):
+            if z_j[j].x == 1:
+                ls.append(j)
+
+        return ls, Z.x, str(round(time_elapsed, 2)) + " seconds", assignments
+    else:
+        return "Model Is Infeasible"
+
+# STAGE 2
+
+print(phase_2(7, 21475.208065116163, 31158.621022118426))

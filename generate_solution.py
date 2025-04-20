@@ -4,28 +4,28 @@ from textwrap import shorten
 
 def clean_and_generate_txt(input_path, output_dir="."):
     with open(input_path, 'r', encoding='utf-8') as file:
-        lines = file.readlines()[1:]  # Skip header
+        lines = file.readlines()[1:] 
 
     current_entry = []
     entries = []
 
-    # Group multiline entries
+    
     for line in lines:
         if line.startswith('"sam_global') and current_entry:
             entries.append("".join(current_entry))
             current_entry = [line]
         else:
             current_entry.append(line)
-    entries.append("".join(current_entry))  # Final entry
+    entries.append("".join(current_entry)) 
 
     for idx, entry in enumerate(entries):
         try:
             entry = entry.replace('""', '"').replace('\n', ' ').strip()
 
-            # Get dataset index
+            
             dataset_index = ''.join(filter(str.isdigit, entry.split(',')[1]))
 
-            # Parse Locations
+            
             loc_start = entry.find("[")
             loc_end = entry.find("]", loc_start) + 1
             locations = ast.literal_eval(entry[loc_start:loc_end])
@@ -64,8 +64,8 @@ def clean_and_generate_txt(input_path, output_dir="."):
                 f.write(content)
 
         except Exception as e:
-            print(f"❌ Entry {idx} failed: {e} | Snippet: {shorten(entry, width=120)}")
+            print(f"Entry {idx} failed: {e} | Snippet: {shorten(entry, width=120)}")
 
-    print("✅ All files generated.")
+    print("All files generated.")
 
-# clean_and_generate_txt("solutions copy.csv", output_dir="./solutions")
+clean_and_generate_txt("solutions copy.csv", output_dir="./solutions")

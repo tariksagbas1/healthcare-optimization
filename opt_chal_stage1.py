@@ -650,10 +650,10 @@ def phase_1(dataset_index):
     # OPTIONAL Parameters:
     # better cuts to enhance bounds, may slow down the process if bounds are already good
     model.setParam("GomoryPasses", 5)
-    model.setParam("FlowCoverCuts", 2)
-    model.setParam("MIPFocus", 1)  # focus on finding feasible solutions fast, lower the upper bound,
+    # model.setParam("FlowCoverCuts", 2)
+    # model.setParam("MIPFocus", 1)  # focus on finding feasible solutions fast, lower the upper bound,
     # useful where global optimum takes an infeasible amount of time to find
-    model.setParam("ConcurrentMIP", 1) # use different methods at the same time
+    # model.setParam("ConcurrentMIP", 1) # use different methods at the same time
     # by assigning CPU cores to different jobs, take the best bound found in any and continue
 
     # Solve Model
@@ -854,4 +854,5 @@ def phase_2(dataset_index, best_bound, phase1_val):
 
 # STAGE 2
 
-print(phase_2(7, 21475.208065116163, 31158.621022118426))
+print(phase_1(14))
+# print(phase_2(10, 16328.87594912057, 22652.355815676212))

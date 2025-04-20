@@ -186,7 +186,7 @@ def lp_global(dataset_index):
         lines = file.readlines()
 
     line1 = lines[0].split()
-    n = int(line1[0])  # Number of
+    n = int(line1[0])  # Number of nodes
     m = int(line1[1])  # Number of healthcare units to place
     M = n
 
@@ -205,15 +205,6 @@ def lp_global(dataset_index):
             row.append(distance)
         d_ij.append(row)
 
-
-    minimums = []
-    for i in range(n):
-        weight_dist = set()
-        for j in range(n):
-            if i != j:
-                weight_dist.add(p[i] * d_ij[i][j])
-        minimums.append(min(weight_dist))
-
     maximums = []
     for i in range(n):
         index = -1
@@ -226,6 +217,7 @@ def lp_global(dataset_index):
                     index = j
         maximums.append((i, index, max_val))
     maximums.sort(key=lambda x: x[2], reverse=True)
+
     # Create model
 
     model = Model("Healthcare Placement")
@@ -251,19 +243,18 @@ def lp_global(dataset_index):
     model.setObjective(Z, GRB.MINIMIZE)
 
     # Constraints
-    for j in range(n):
-        model.addConstr(Z >= minimums[j] * (1 - z_j[j]))
 
-    minimums.sort(reverse=True)
-    # model.addConstr(Z >= minimums[n//10])
     model.addConstr(Z <= maximums[0][2])
+    cluster_index, cluster_time = weighted_clustering(dataset_index)
+    for j in cluster_index:
+        z_j[j].start = 1
 
-    # Z > b_ij * d_ij for every i, j
+    # Z > p_i * b_ij * d_ij for every i, j
     for i in range(n):
         for j in range(n):
             model.addConstr(Z >= p[i] * b_ij[i, j] * d_ij[i][j], name=f"Z_constraint_{i}_{j}")
 
-    # Capacity constraint, sum(b_ij * p[i]) <= C for every unit. (There can be surplus capacity ?)
+    # Capacity constraint, sum(b_ij * p[i]) <= C * z_j for every unit. (surplus capacity allowed)
     for j in range(n):
         variables = 0.0
         for i in range(n):
@@ -317,8 +308,8 @@ def lp_global(dataset_index):
         for j in range(n):
             if z_j[j].x == 1:
                 ls.append(j)
-        z_val = Z.x
-        return round(time_elapsed, 2), " seconds, Z : " , Z.x, ls, assignments
+
+        return str(round(time_elapsed, 2)), " seconds, Z : " , Z.x, ls, assignments
     else:
         return "Model Is Infeasible"
 
@@ -653,7 +644,7 @@ def phase_1(dataset_index):
     # model.setParam("FlowCoverCuts", 2)
     # model.setParam("MIPFocus", 1)  # focus on finding feasible solutions fast, lower the upper bound,
     # useful where global optimum takes an infeasible amount of time to find
-    # model.setParam("ConcurrentMIP", 1) # use different methods at the same time
+    model.setParam("ConcurrentMIP", 1) # tells gurobi to use different methods at the same time
     # by assigning CPU cores to different jobs, take the best bound found in any and continue
 
     # Solve Model
@@ -818,6 +809,7 @@ def phase_2(dataset_index, best_bound, phase1_val):
     model.setParam("NumericFocus", 1) # makes gurobi more careful with numbers,
     # good if values are too close to each other
     model.setParam("GomoryPasses", 5) # better cuts to enhance bounds
+    model.setParam("FlowCoverCuts", 2)
     model.setParam('Presolve', 2) # tells gurobi to do a better presolve
     model.setParam("Heuristics", 0.3) # helps tighten the upper bound faster
     model.setParam("TimeLimit", 800) # get a good enough solution in reasonable amount of time
@@ -854,5 +846,6 @@ def phase_2(dataset_index, best_bound, phase1_val):
 
 # STAGE 2
 
-print(phase_1(14))
-# print(phase_2(10, 16328.87594912057, 22652.355815676212))
+# print(phase_1(13))
+# print(phase_2(11, 15922.07554899332, 35149.59432198329))
+print(lp_global(20))

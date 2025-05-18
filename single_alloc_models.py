@@ -2173,24 +2173,7 @@ def cifcif(dataset_index):
 
     # START TIMER
     start = time()
-    """
-    units = d_cluster_new(dataset_index)[0]
-    b_ij_start, ifs_time = csam_ifs1(dataset_index, units)
 
-    # Set starting values of b_ij's with IFS
-    for i in range(n):
-        for j in range(n):
-            if (i, j) in b_ij_start:
-                b_ij[(i, j)].start = b_ij_start[(i, j)]
-            else:
-                b_ij[(i, j)].start = 0
-    # Set starting values of z_j's with IFS
-    for j in range(n):
-        if j in units:
-            z_j[j].start = 1
-        else:
-            z_j[j].start = 0
-    """
     # Solve Model
     model.optimize()
     print()
@@ -2221,4 +2204,162 @@ def cifcif(dataset_index):
                 ls.append(j)
     return str(round(time_elapsed, 2)) + " seconds, Z : " + str(Z.x), ls, max(w), min(w), alpha, max(d), min(d), beta, assignments
 
-print(cifcif(12))
+def csam_global_w_assignments(dataset_index, uns : list, assignments : dict):
+    # INITIAL DATA
+    p = [] # Population of every community
+    cord_com = [] # Coordinate of every population [x, y]
+    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file: # Read from file
+        lines = file.readlines()  
+
+    line1 = lines[0].split()
+    n = int(line1[0]) # Number of
+    m = int(line1[1]) # Number of healthcare units to place
+
+    for line in lines[2:]:  # skip first two lines
+        values = list(map(float, line.split()))  # Convert all values to floats
+        x, y, C, population = values[1], values[2], values[3], int(values[4])
+        cord_com.append([x, y]) # add coordinates
+        p.append(population)  # add populations for each community i
+
+
+
+    # Calculate distances
+    d_ij = {}
+    i = 0
+    for x1, y1 in cord_com:
+        j = 0
+        for x2, y2 in cord_com:
+            distance = dist((x1, y1), (x2, y2))
+            d_ij[(i, j)] = distance
+            j += 1
+        i += 1
+
+    alpha = round((sum(p) / m ) * 0.2)
+    beta = max([d_ij[(i, j)] for i in range(n) for j in range(n)]) * 0.2
+    M1 = C
+
+    # Create model
+
+    model = Model("Healthcare Placement")
+
+    # Decision variables
+
+    # b_ij: 1 if population i is served by unit on j. 0 otherwise
+    b_ij = {}
+    for i in range(n):
+        for j in range(n):
+            b_ij[(i, j)] = model.addVar(vtype = GRB.BINARY, name = f"b_{i}_{j}")
+
+    # z_j: 1 if facility is opened at node j. 0 o/w
+    z_j = []
+    for j in range(n):
+        z_j.append(model.addVar(vtype = GRB.BINARY, name = f"z_{j}")) 
+
+    # w_j: workload of node j
+    w_j = [model.addVar(vtype=GRB.CONTINUOUS, name=f"w_{j}") for j in range(n)]
+    for j in range(n):
+        model.addConstr(w_j[j] == quicksum(p[i] * b_ij[i, j] for i in range(n)), name=f"workload_def_{j}")
+    
+    # Distance each community travels to get service
+    d_i = [model.addVar(vtype=GRB.CONTINUOUS, name=f"d_{i}") for i in range(n)]
+    for i in range(n):
+        model.addConstr(d_i[i] == quicksum(b_ij[(i, j)] * d_ij[(i, j)] for j in range(n)), name=f"d_{i}")
+    
+    # Z: auxillary variable 
+    Z = model.addVar(vtype = GRB.CONTINUOUS, name = "Z") 
+    
+    model.update()
+
+    model.setObjective(Z, GRB.MINIMIZE)
+    model.setParam("MIPFocus", 1)
+    model.setParam("Heuristics", 0.5)
+
+    # Constraints
+
+    # Z > p[i] * b_ij * d_ij for every i, j
+    for i in range(n):
+        model.addConstr(Z >= p[i] * d_i[i], name = f"Z_constraint_{j}")
+    
+    # Beta fairness constraint
+    for i in range(n):
+        for k in range(i):
+            model.addConstr(beta >= d_i[i] - d_i[k], name=f"beta_diff_pos_{i}_{k}")
+            model.addConstr(beta >= d_i[k] - d_i[i], name=f"beta_diff_neg_{i}_{k}")
+            
+    # Alpha fairness constraint
+    for i in range(n):
+        for j in range(i):
+            if i != j:
+                model.addConstr(alpha + M1 * (2 - z_j[i] - z_j[j]) >= w_j[i] - w_j[j], name=f"w_pos_{i}_{j}")
+                model.addConstr(alpha + M1 * (2 - z_j[i] - z_j[j]) >= w_j[j] - w_j[i], name=f"w_neg_{i}_{j}")
+            
+    # Capacity constraint, sum(b_ij * p[i]) <= C for every unit. (There can be surplus capacity ?)
+    for j in range(n):
+        variables = 0.0
+        for i in range(n):
+            variables += b_ij[(i, j)] * p[i]
+        model.addConstr(variables <= C * z_j[j], name = f"capacity_constraint_{j}")
+  
+    # Population constraint
+    for i in range(n):
+        var = 0.0
+        for j in range(n):
+            var += b_ij[(i, j)]
+        model.addConstr(1 == var, name=f"Population_constraint{i}")
+
+    # Total unit constraint, sum(x_i) <= m
+    var = 0.0
+    for j in range(n):
+        var += z_j[j]
+    model.addConstr(var <= m, name = f"unit_constraint")
+
+    for j in range(n):
+        for i in range(n):
+            model.addConstr(b_ij[i,j] <= z_j[j])
+
+    # Assign starting values for b_ij
+    for j, comms in assignments.items():
+        for i in comms:
+            b_ij[(i, j)].start = 1
+    
+    # Assign starting values for z_j
+    for j in range(n):
+        if j in uns:
+            z_j[j].start = 1
+        else:
+            z_j[j].start = 0
+        
+    # START TIMER
+    start = time()
+
+    # Solve Model
+    model.optimize()
+    print()
+
+    # END TIMER
+    end = time()
+    time_elapsed = end - start
+    assignments = {}
+    for j in range(n):
+        coms = []
+        for i in range(n):
+            if b_ij[(i, j)]: ################## MODIFIED ####################
+                if b_ij[(i, j)].x != 0:
+                    coms.append(i)
+        if coms != []:
+            assignments[j] = coms
+    w = []
+    for i in range(n):
+        if w_j[i].x != 0:
+            w.append(w_j[i].x)
+    d = []
+    for i in range(len(d_i)):
+        d.append(d_i[i].x)      
+    ls = []
+    for i in range(n):
+        for j in range(n):
+            if b_ij[(i, j)].x == 1 and j not in ls:
+                ls.append(j)
+    return str(round(time_elapsed, 2)) + " seconds, Z : " + str(Z.x), ls, max(w), min(w), alpha, max(d), min(d), beta, assignments
+
+print(csam_global_w_assignments(12, [0, 1, 44, 148, 273, 94, 266, 7, 233, 278, 185, 197, 33, 283, 96, 56, 265, 229, 134, 12, 54, 235, 135, 101, 151, 117, 232, 67, 69, 240, 48, 9, 272, 46, 234, 128, 55, 163, 159, 261, 225, 277, 215, 223, 213, 292, 13, 258, 162, 66, 102, 150, 182, 298], {0: [0, 29, 59, 91, 110], 1: [1, 32, 42, 92, 116, 220], 7: [7, 166, 183, 273], 9: [44, 152, 271], 12: [19, 65, 83, 87, 217, 239], 13: [96, 207, 226, 254, 289], 33: [12, 126, 132, 169, 172], 44: [2, 21, 79, 128, 175, 222, 268, 284], 46: [46, 62, 118, 186, 285], 48: [38, 69, 93, 170, 199, 221, 235, 237], 54: [20, 49, 54, 122, 181, 190, 200, 214], 55: [55, 90, 121, 184, 288], 56: [15, 23, 39, 56, 134], 66: [112, 114, 130, 204, 212, 246], 67: [33, 35, 70, 194, 203, 205, 238], 69: [34, 51, 68, 188, 209], 94: [5, 123, 135, 171, 202, 247], 96: [14, 43, 139, 195, 294], 101: [27, 164, 165, 173, 174, 178, 270, 272], 102: [113, 198, 228, 242, 274, 278], 117: [30, 117, 119, 142, 167, 245, 283], 128: [52, 133, 255, 267, 276, 281], 134: [18, 26, 146, 180], 135: [24, 36, 47, 136, 231, 243, 260], 148: [3, 74, 94, 148, 244], 150: [125, 150, 158, 196], 151: [28, 66, 97, 101, 151], 159: [61, 82, 208, 215, 297], 162: [108, 137, 147, 162, 292, 296], 163: [57, 81, 127, 163, 275, 286], 182: [143, 153, 182, 236, 263, 279], 185: [10, 80, 138, 168, 185, 210], 197: [11, 140, 192, 197, 206], 213: [89, 115, 157, 234, 280], 215: [76, 131, 154, 159], 223: [85, 100, 155, 193, 223, 230], 225: [67, 109, 213, 240, 287], 229: [17, 41, 72, 120, 144, 161], 232: [31, 63, 75, 252, 266], 233: [8, 86, 227, 233, 249, 257, 269], 234: [50, 191, 218, 219], 235: [22, 40, 48, 78, 129, 299], 240: [37, 53, 77, 105, 225, 256], 258: [98, 104, 258, 262, 291], 261: [64, 88, 99, 107, 211, 261, 282], 265: [16, 60, 149, 259, 265], 266: [6, 58, 111, 141, 187, 232, 290], 272: [45, 124, 145, 179, 251], 273: [4, 84, 106, 177, 224, 250, 293], 277: [73, 103, 248, 277], 278: [9, 71, 102, 160, 229], 283: [13, 25, 176, 189, 216], 292: [95, 156, 253, 264], 298: [201, 241, 295, 298]}))

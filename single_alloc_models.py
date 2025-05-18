@@ -1849,7 +1849,7 @@ def csam_global_w_ifs1(dataset_index):
     start = time()
 
     units = d_cluster_new(dataset_index)[0]
-    b_ij_start, ifs_time = csam_ifs1(dataset_index, [217, 55, 263, 284, 58, 168, 49, 107, 116, 90, 142, 191, 285, 141, 56, 164, 154, 288, 59, 207, 266, 16, 22, 81, 282, 248, 88, 72, 274, 62, 92, 236, 130, 42, 124, 15, 180, 258, 1, 0, 261, 31, 120, 267, 109, 291, 257, 118, 235, 21])
+    b_ij_start, ifs_time = csam_ifs1(dataset_index, units)
 
     # Set starting values of b_ij's with IFS
     for i in range(n):
@@ -2062,4 +2062,163 @@ def csam_apx1_w_ifs1(dataset_index, d_up):
     else:
         return "Model Is Infeasible"
     
-print(csam_global_w_ifs1(11))
+def cifcif(dataset_index):
+    # INITIAL DATA
+    p = [] # Population of every community
+    cord_com = [] # Coordinate of every population [x, y]
+    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file: # Read from file
+        lines = file.readlines()  
+
+    line1 = lines[0].split()
+    n = int(line1[0]) # Number of
+    m = int(line1[1]) # Number of healthcare units to place
+
+    for line in lines[2:]:  # skip first two lines
+        values = list(map(float, line.split()))  # Convert all values to floats
+        x, y, C, population = values[1], values[2], values[3], int(values[4])
+        cord_com.append([x, y]) # add coordinates
+        p.append(population)  # add populations for each community i
+
+
+
+    # Calculate distances
+    d_ij = {}
+    i = 0
+    for x1, y1 in cord_com:
+        j = 0
+        for x2, y2 in cord_com:
+            distance = dist((x1, y1), (x2, y2))
+            d_ij[(i, j)] = distance
+            j += 1
+        i += 1
+
+    alpha = round((sum(p) / m ) * 0.2)
+    beta = max([d_ij[(i, j)] for i in range(n) for j in range(n)]) * 0.2
+    M1 = C
+
+    # Create model
+
+    model = Model("Healthcare Placement")
+
+    # Decision variables
+
+    # b_ij: 1 if population i is served by unit on j. 0 otherwise
+    b_ij = {}
+    for i in range(n):
+        for j in range(n):
+            b_ij[(i, j)] = model.addVar(vtype = GRB.BINARY, name = f"b_{i}_{j}")
+
+    # z_j: 1 if facility is opened at node j. 0 o/w
+    z_j = []
+    for j in range(n):
+        z_j.append(model.addVar(vtype = GRB.BINARY, name = f"z_{j}")) 
+
+    # w_j: workload of node j
+    w_j = [model.addVar(vtype=GRB.CONTINUOUS, name=f"w_{j}") for j in range(n)]
+    for j in range(n):
+        model.addConstr(w_j[j] == quicksum(p[i] * b_ij[i, j] for i in range(n)), name=f"workload_def_{j}")
+    
+    # Distance each community travels to get service
+    d_i = [model.addVar(vtype=GRB.CONTINUOUS, name=f"d_{i}") for i in range(n)]
+    for i in range(n):
+        model.addConstr(d_i[i] == quicksum(b_ij[(i, j)] * d_ij[(i, j)] for j in range(n)), name=f"d_{i}")
+    
+    # Z: auxillary variable 
+    Z = model.addVar(vtype = GRB.CONTINUOUS, name = "Z") 
+    
+    model.update()
+
+    model.setObjective(Z, GRB.MINIMIZE)
+    model.setParam("MIPFocus", 1)
+    model.setParam("Heuristics", 0.5)
+    model.setParam("Cuts", 2)
+
+    # Constraints
+
+    # Z > p[i] * b_ij * d_ij for every i, j
+    for i in range(n):
+        model.addConstr(Z >= p[i] * d_i[i], name = f"Z_constraint_{j}")
+    
+    # Beta fairness constraint
+    for i in range(n):
+        model.addConstr(beta >= d_i[i], name=f"beta_diff_pos_{i}")
+            
+    # Alpha fairness constraint
+    for i in range(n):
+        model.addConstr(alpha + M1 * (1 - z_j[i]) >= C - w_j[i], name=f"w_pos_{i}_{j}")
+            
+    # Capacity constraint, sum(b_ij * p[i]) <= C for every unit. (There can be surplus capacity ?)
+    for j in range(n):
+        variables = 0.0
+        for i in range(n):
+            variables += b_ij[(i, j)] * p[i]
+        model.addConstr(variables <= C * z_j[j], name = f"capacity_constraint_{j}")
+  
+    # Population constraint
+    for i in range(n):
+        var = 0.0
+        for j in range(n):
+            var += b_ij[(i, j)]
+        model.addConstr(1 == var, name=f"Population_constraint{i}")
+
+    # Total unit constraint, sum(x_i) <= m
+    var = 0.0
+    for j in range(n):
+        var += z_j[j]
+    model.addConstr(var <= m, name = f"unit_constraint")
+
+    for j in range(n):
+        for i in range(n):
+            model.addConstr(b_ij[i,j] <= z_j[j])
+
+    # START TIMER
+    start = time()
+    """
+    units = d_cluster_new(dataset_index)[0]
+    b_ij_start, ifs_time = csam_ifs1(dataset_index, units)
+
+    # Set starting values of b_ij's with IFS
+    for i in range(n):
+        for j in range(n):
+            if (i, j) in b_ij_start:
+                b_ij[(i, j)].start = b_ij_start[(i, j)]
+            else:
+                b_ij[(i, j)].start = 0
+    # Set starting values of z_j's with IFS
+    for j in range(n):
+        if j in units:
+            z_j[j].start = 1
+        else:
+            z_j[j].start = 0
+    """
+    # Solve Model
+    model.optimize()
+    print()
+
+    # END TIMER
+    end = time()
+    time_elapsed = end - start
+    assignments = {}
+    for j in range(n):
+        coms = []
+        for i in range(n):
+            if b_ij[(i, j)]: ################## MODIFIED ####################
+                if b_ij[(i, j)].x != 0:
+                    coms.append(i)
+        if coms != []:
+            assignments[j] = coms
+    w = []
+    for i in range(n):
+        if w_j[i].x != 0:
+            w.append(w_j[i].x)
+    d = []
+    for i in range(len(d_i)):
+        d.append(d_i[i].x)      
+    ls = []
+    for i in range(n):
+        for j in range(n):
+            if b_ij[(i, j)].x == 1 and j not in ls:
+                ls.append(j)
+    return str(round(time_elapsed, 2)) + " seconds, Z : " + str(Z.x), ls, max(w), min(w), alpha, max(d), min(d), beta, assignments
+
+print(cifcif(12))

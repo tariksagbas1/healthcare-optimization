@@ -1690,6 +1690,11 @@ def csam_global(dataset_index):
         var += z_j[j]
     model.addConstr(var <= m, name = f"unit_constraint")
 
+    # Presolve constraints
+    for j in range(n):
+        for i in range(n):
+            model.addConstr(b_ij[i,j] <= z_j[j])
+
     # START TIMER
     start = time()
 
@@ -1758,7 +1763,7 @@ def csam_global_w_ifs1(dataset_index):
 
     alpha = round((sum(p) / m ) * 0.2)
     beta = max([d_ij[(i, j)] for i in range(n) for j in range(n)]) * 0.2
-    M1 = 10000
+    M1 = C
 
     # Create model
 
@@ -1793,7 +1798,10 @@ def csam_global_w_ifs1(dataset_index):
     model.update()
 
     model.setObjective(Z, GRB.MINIMIZE)
-    model.setParam("Threads", 10)
+    model.setParam("MIPFocus", 1)
+    model.setParam("Heuristics", 0.5)
+    model.setParam("Cuts", 2)
+
     # Constraints
 
     # Z > p[i] * b_ij * d_ij for every i, j
@@ -1833,11 +1841,15 @@ def csam_global_w_ifs1(dataset_index):
         var += z_j[j]
     model.addConstr(var <= m, name = f"unit_constraint")
 
+    for j in range(n):
+        for i in range(n):
+            model.addConstr(b_ij[i,j] <= z_j[j])
+
     # START TIMER
     start = time()
 
     units = d_cluster_new(dataset_index)[0]
-    b_ij_start, ifs_time = csam_ifs1(dataset_index, units)
+    b_ij_start, ifs_time = csam_ifs1(dataset_index, [217, 55, 263, 284, 58, 168, 49, 107, 116, 90, 142, 191, 285, 141, 56, 164, 154, 288, 59, 207, 266, 16, 22, 81, 282, 248, 88, 72, 274, 62, 92, 236, 130, 42, 124, 15, 180, 258, 1, 0, 261, 31, 120, 267, 109, 291, 257, 118, 235, 21])
 
     # Set starting values of b_ij's with IFS
     for i in range(n):
@@ -1918,7 +1930,7 @@ def csam_apx1_w_ifs1(dataset_index, d_up):
     d_max = percentile(all_weighted_distances, d_up)
     alpha = round((sum(p) / m ) * 0.2)
     beta = max([d_ij[(i, j)] for i in range(n) for j in range(n)]) * 0.2
-    M1 = 10000
+    M1 = C
 
     # Create model
 

@@ -80,14 +80,14 @@ def generate_solution_files(csv_path=CSV_PATH, output_dir=OUT_DIR):
         out_lines += [
             "Workload Fairness Check:",
             f"  Min workload = {min_w:.2f}, Max workload = {max_w:.2f}",
-            f"  Workload Gap = {gap_w:.2f} (Threshold α = {alpha})",
+            f"  Workload Gap = {gap_w:.2f} (Threshold Alpha = {int(alpha)})",
             ""
         ]
         gap_d = max_d - min_d
         out_lines += [
             "Distance Fairness Check:",
             f"  Min Distance = {min_d:.2f}, Max Distance = {max_d:.2f}",
-            f"  Distance Gap = {gap_d:.2f} (Threshold β = {beta})"
+            f"  Distance Gap = {gap_d:.2f} (Threshold Beta = {beta})"
         ]
 
         # Write file

@@ -20,8 +20,8 @@ Objective Value: 37252.85280351023
 
 Workload Fairness Check:
   Min workload = 292.00, Max workload = 321.00
-  Workload Gap = 29.00 (Threshold α = 63.0)
+  Workload Gap = 29.00 (Threshold Alpha = 63)
 
 Distance Fairness Check:
   Min Distance = 0.00, Max Distance = 862.61
-  Distance Gap = 862.61 (Threshold β = 872.8502735292004)
+  Distance Gap = 862.61 (Threshold Beta = 872.8502735292004)

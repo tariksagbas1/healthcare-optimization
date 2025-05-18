@@ -764,7 +764,7 @@ def sam_ifs1(dataset_index, units: list):
             for i in range(n):
                 b_ij[(i, unit_index)] = b_ij[(i, unit_index)].x
 
-        return b_ij, round(time_elapsed, 2)
+        return Z.x
     else:
         return "Model Is Infeasible"
 """
@@ -1355,11 +1355,13 @@ def csam_ifs1(dataset_index, units : list):
     # Z: auxillary variable 
     Z = model.addVar(vtype = GRB.CONTINUOUS, name = "Z") 
     
+
     model.update()
     
+    model.setObjective(Z, GRB.MINIMIZE)
 
     # Constraints
-
+    
     # Alpha constraint
     for i in units:
         for k in units:
@@ -1374,7 +1376,7 @@ def csam_ifs1(dataset_index, units : list):
                 model.addConstr(d_i[i] - d_i[j] <= beta, name = f"beta_constraint_{i}{j}")
                 model.addConstr(d_i[j] - d_i[i] <= beta, name = f"beta_constraint_{j}{i}")
     
-    # Z constraint
+     # Z constraint
     for unit_index in units:
         for i in range(n):
             if i != unit_index:
@@ -1387,7 +1389,7 @@ def csam_ifs1(dataset_index, units : list):
             variables += b_ij[(i, unit_index)]
         model.addConstr(variables == 1, name = f"single_allocation_constraint_{i}")
 
-    # Capacity constraint
+   # Capacity constraint
     for unit_index in units:
         variables = 0.0
         for i in range(n):
@@ -1396,7 +1398,6 @@ def csam_ifs1(dataset_index, units : list):
     
     
     model.update()
-    model.setParam(GRB.Param.MIPGap, 0.05)
 
     # START TIMER
     start = time()

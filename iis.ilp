@@ -1,0 +1,16 @@
+\ Model Healthcare Placement_copy
+\ LP format - for model browsing. Use MPS format to capture full model detail.
+\ Signature: 0x34ca9022fb47756a
+Minimize
+ 
+Subject To
+ d_14: - 158.6757700469735 b_14_13 - 178.317133220563 b_14_16 + d_14 = 0
+ d_19: - 573.4744981252436 b_19_13 - 873.1242752323406 b_19_16 + d_19 = 0
+ beta_constraint_1914: - d_14 + d_19 <= 222.112494020485
+ single_allocation_constraint_19: b_19_13 + b_19_16 = 1
+Bounds
+ d_14 free
+ d_19 free
+Binaries
+ b_14_13 b_19_13 b_14_16 b_19_16
+End

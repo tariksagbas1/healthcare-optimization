@@ -694,7 +694,6 @@ def sam_ifs1(dataset_index, units: list):
         p.append(population)  # add populations for each community i
 
 
-
     # Calculate distances
     d_ij = []
     for x1, y1 in cord_com:
@@ -714,8 +713,7 @@ def sam_ifs1(dataset_index, units: list):
     b_ij = {} # b_ij = 1 if community i is served by unit on j
     for unit_index in units:
         for i in range(n):
-            b_ij[(i, unit_index)] = model.addVar(vtype = GRB.BINARY, name = f"b_{i}_{unit_index}")
-            
+            b_ij[(i, unit_index)] = model.addVar(vtype = GRB.BINARY, name = f"b_{i}_{unit_index}")  
 
     # Z: auxillary variable 
     Z = model.addVar(vtype = GRB.CONTINUOUS, name = "Z") 
@@ -725,7 +723,6 @@ def sam_ifs1(dataset_index, units: list):
     model.setObjective(Z, GRB.MINIMIZE)
 
     # Constraints
-
 
     # Z constraint
     for unit_index in units:
@@ -1302,4 +1299,292 @@ def sam_apx3_w_ifs1(dataset_index, d_up = 90, p_lp = 10):
                     ls.append(j)
     return f"Optimality Gap: {model.MIPGap * 100:.2f}% " + str(round(time_elapsed, 2)) + " seconds, Z : " + str(Z.x), ls, assignments
 
-plot_function(0, [13, 16], {13: [0, 1, 2, 3, 4, 10, 11, 12, 13, 14, 19], 16: [5, 6, 7, 8, 9, 15, 16, 17, 18]})
+def csam_ifs1(dataset_index, units : list):
+    # INITIAL DATA
+
+    p = [] # Population of every community
+    cord_com = [] # Coordinate of every population [x, y]
+    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file: # Read from file
+        lines = file.readlines()  
+
+    line1 = lines[0].split()
+    n = int(line1[0]) # Number of
+    m = int(line1[1]) # Number of healthcare units to place
+    
+    for line in lines[2:]:  # skip first two lines
+        values = list(map(float, line.split()))  # Convert all values to floats
+        x, y, C, population = values[1], values[2], values[3], int(values[4])
+        cord_com.append([x, y]) # add coordinates
+        p.append(population)  # add populations for each community i
+
+
+    # Calculate distances
+    d_ij = []
+    for x1, y1 in cord_com:
+        row = []
+        for x2, y2 in cord_com:
+            distance = dist((x1, y1), (x2, y2))
+            row.append(distance)
+        
+        d_ij.append(row)
+
+    alpha = round((sum(p) / m ) * 0.2)
+    beta = max([d_ij[i][j] for i in range(n) for j in range(n)]) * 0.2
+
+    # Create model
+
+    model = Model("Healthcare Placement")
+
+    # Decision variables
+
+    b_ij = {} # b_ij = 1 if community i is served by unit on j
+    for unit_index in units:
+        for i in range(n):
+            b_ij[(i, unit_index)] = model.addVar(vtype = GRB.BINARY, name = f"b_{i}_{unit_index}")
+
+    # w_j: workload of unit j
+    w_j = [model.addVar(vtype=GRB.CONTINUOUS, name=f"w_{j}") for j in range(n)]
+    for unit_index in units:
+        model.addConstr(w_j[unit_index] == quicksum(b_ij[(i, unit_index)] * p[i] for i in range(n)))
+
+    # Distance each community travels to get service
+    d_i = [model.addVar(vtype=GRB.CONTINUOUS, name=f"d_{i}") for i in range(n)]
+    for i in range(n):
+        model.addConstr(d_i[i] == quicksum(b_ij[(i, unit_index)] * d_ij[i][unit_index] for unit_index in units), name=f"d_{i}")
+
+    # Z: auxillary variable 
+    Z = model.addVar(vtype = GRB.CONTINUOUS, name = "Z") 
+    
+    model.update()
+    
+
+    # Constraints
+
+    # Alpha constraint
+    for i in units:
+        for k in units:
+            if i != k:
+                model.addConstr(w_j[i] - w_j[k] <= alpha, name = f"alpha_constraint_{i}{k}")
+                model.addConstr(w_j[k] - w_j[i] <= alpha, name = f"alpha_constraint_{k}{i}")
+    
+    # Beta constraint
+    for i in range(n):
+        for j in range(n):
+            if i != j:
+                model.addConstr(d_i[i] - d_i[j] <= beta, name = f"beta_constraint_{i}{j}")
+                model.addConstr(d_i[j] - d_i[i] <= beta, name = f"beta_constraint_{j}{i}")
+    
+    # Z constraint
+    for unit_index in units:
+        for i in range(n):
+            if i != unit_index:
+                model.addConstr(Z >= b_ij[(i, unit_index)] * d_ij[i][unit_index] * p[i], name = f"Z_constraint_{i}_{unit_index}")
+
+    # Single allocation constraint, sum(b_ij) == 1 for every population
+    for i in range(n):
+        variables = 0.0
+        for unit_index in units:
+            variables += b_ij[(i, unit_index)]
+        model.addConstr(variables == 1, name = f"single_allocation_constraint_{i}")
+
+    # Capacity constraint
+    for unit_index in units:
+        variables = 0.0
+        for i in range(n):
+            variables += b_ij[(i, unit_index)] * p[i]
+        model.addConstr(variables <= C, name = f"capacity_constraint_{unit_index}")
+    
+    
+    model.update()
+    model.setParam(GRB.Param.MIPGap, 0.05)
+
+    # START TIMER
+    start = time()
+
+    # Solve Model
+    model.optimize()
+
+    print()
+    # END TIMER
+    end = time()
+    time_elapsed = end - start
+    if model.status == GRB.OPTIMAL:
+
+        for unit_index in units:
+            for i in range(n):
+                b_ij[(i, unit_index)] = b_ij[(i, unit_index)].x
+
+        assignments = {}
+        for j in units:
+            coms = []
+            for i in range(n):
+                if b_ij[(i, j)] != 0:
+                    coms.append(i)
+            if coms != []:
+                assignments[j] = coms
+        w = []
+        for i in units:
+            if w_j[i].x != 0:
+                w.append(w_j[i].x)
+        d = []
+        for i in range(n):
+            d.append(d_i[i].x)      
+        
+        return str(round(time_elapsed, 2)) + " seconds, Z : " + str(Z.x), max(w), min(w), alpha, max(d), min(d), beta, assignments
+
+        return b_ij, round(time_elapsed, 2)
+    else:
+        return "Infeasible"
+    
+def csam_global(dataset_index):
+
+    # INITIAL DATA
+    p = [] # Population of every community
+    cord_com = [] # Coordinate of every population [x, y]
+    with open(f"./datasets/Instance_{dataset_index}.txt", "r") as file: # Read from file
+        lines = file.readlines()  
+
+    line1 = lines[0].split()
+    n = int(line1[0]) # Number of
+    m = int(line1[1]) # Number of healthcare units to place
+
+    for line in lines[2:]:  # skip first two lines
+        values = list(map(float, line.split()))  # Convert all values to floats
+        x, y, C, population = values[1], values[2], values[3], int(values[4])
+        cord_com.append([x, y]) # add coordinates
+        p.append(population)  # add populations for each community i
+
+
+
+    # Calculate distances
+    d_ij = {}
+    i = 0
+    for x1, y1 in cord_com:
+        j = 0
+        for x2, y2 in cord_com:
+            distance = dist((x1, y1), (x2, y2))
+            d_ij[(i, j)] = distance
+            j += 1
+        i += 1
+
+
+    alpha = round((sum(p) / m ) * 0.2)
+    beta = max([d_ij[(i, j)] for i in range(n) for j in range(n)]) * 0.2
+    M1 = 999999999
+
+    # Create model
+
+    model = Model("Healthcare Placement")
+
+    # Decision variables
+
+    # b_ij: 1 if population i is served by unit on j. 0 otherwise
+    b_ij = {}
+    for i in range(n):
+        for j in range(n):
+            b_ij[(i, j)] = model.addVar(vtype = GRB.BINARY, name = f"b_{i}_{j}")
+
+    # z_j: 1 if facility is opened at node j. 0 o/w
+    z_j = []
+    for j in range(n):
+        z_j.append(model.addVar(vtype = GRB.BINARY, name = f"z_{j}")) 
+
+    # w_j: workload of node j
+    w_j = [model.addVar(vtype=GRB.CONTINUOUS, name=f"w_{j}") for j in range(n)]
+    for j in range(n):
+        model.addConstr(w_j[j] == quicksum(p[i] * b_ij[i, j] for i in range(n)), name=f"workload_def_{j}")
+    
+    # Distance each community travels to get service
+    d_i = [model.addVar(vtype=GRB.CONTINUOUS, name=f"d_{i}") for i in range(n)]
+    for i in range(n):
+        model.addConstr(d_i[i] == quicksum(b_ij[(i, j)] * d_ij[(i, j)] for j in range(n)), name=f"d_{i}")
+    
+    # Z: auxillary variable 
+    Z = model.addVar(vtype = GRB.CONTINUOUS, name = "Z") 
+    
+    model.update()
+
+    model.setObjective(Z, GRB.MINIMIZE)
+    
+    # Constraints
+
+    # Z > p[i] * b_ij * d_ij for every i, j
+    for i in range(n):
+        variables = 0.0
+        for j in range(n):
+            if i != j:
+                variables += p[i] * b_ij[i, j] * d_ij[(i, j)]
+        model.addConstr(Z >= variables, name = f"Z_constraint_{j}")
+    
+    # Beta fairness constraint
+    for i in range(n):
+        for k in range(i):
+            model.addConstr(beta >= d_i[i] - d_i[k], name=f"beta_diff_pos_{i}_{k}")
+            model.addConstr(beta >= d_i[k] - d_i[i], name=f"beta_diff_neg_{i}_{k}")
+            
+    # Alpha fairness constraint
+    for i in range(n):
+        for j in range(i):
+            if i != j:
+                model.addConstr(alpha + M1 * (2 - z_j[i] - z_j[j]) >= w_j[i] - w_j[j], name=f"w_pos_{i}_{j}")
+                model.addConstr(alpha + M1 * (2 - z_j[i] - z_j[j]) >= w_j[j] - w_j[i], name=f"w_neg_{i}_{j}")
+            
+    # Capacity constraint, sum(b_ij * p[i]) <= C for every unit. (There can be surplus capacity ?)
+    for j in range(n):
+        variables = 0.0
+        for i in range(n):
+            variables += b_ij[(i, j)] * p[i]
+        model.addConstr(variables <= C * z_j[j], name = f"capacity_constraint_{j}")
+  
+    # Population constraint
+    for i in range(n):
+        var = 0.0
+        for j in range(n):
+            var += b_ij[(i, j)]
+        model.addConstr(1 == var, name=f"Population_constraint{i}")
+
+    # Total unit constraint, sum(x_i) == m
+    
+    var = 0.0
+    for j in range(n):
+        var += z_j[j]
+    model.addConstr(var <= m, name = f"unit_constraint")
+
+    # START TIMER
+    start = time()
+
+    # Solve Model
+    model.optimize()
+    print()
+
+    # END TIMER
+    end = time()
+    time_elapsed = end - start
+    if model.status == GRB.OPTIMAL:
+        assignments = {}
+        for j in range(n):
+            coms = []
+            for i in range(n):
+                if b_ij[(i, j)]: ################## MODIFIED ####################
+                    if b_ij[(i, j)].x != 0:
+                        coms.append(i)
+            if coms != []:
+                assignments[j] = coms
+        w = []
+        for i in range(n):
+            if w_j[i].x != 0:
+                w.append(w_j[i].x)
+        d = []
+        for i in range(len(d_i)):
+            d.append(d_i[i].x)      
+        ls = []
+        for i in range(n):
+            for j in range(n):
+                if b_ij[(i, j)].x == 1 and j not in ls:
+                    ls.append(j)
+        return str(round(time_elapsed, 2)) + " seconds, Z : " + str(Z.x), ls, f"max w: {max(w)}", f"min w: {min(w)}", f"alpha: {alpha}", f"max d: {max(d)}", f"min d: {min(d)}", f"beta: {beta}", assignments
+    else:
+        return "Model Is Infeasible"
+
+#print(csam_global(1))
+print(csam_ifs1(1, [24, 59, 26, 75, 99, 53, 45, 61, 50, 87]))

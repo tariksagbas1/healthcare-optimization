@@ -2050,4 +2050,4 @@ def csam_apx1_w_ifs1(dataset_index, d_up):
     else:
         return "Model Is Infeasible"
     
-print(csam_global(8))
+print(csam_global_w_ifs1(11))

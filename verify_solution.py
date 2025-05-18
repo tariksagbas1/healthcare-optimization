@@ -1,5 +1,7 @@
 from math import dist
+from single_alloc_models import d_cluster_new
 import os
+from itertools import combinations
 
 def load_instance(dataset_index):
     """Load populations and distance matrix from Instance_{dataset_index}.txt."""
@@ -54,4 +56,58 @@ def verify_solution(dataset_index, assignments, alpha, beta):
     }
     return alpha_ok and beta_ok
 
-print(verify_solution(7, {4: [53, 124, 187, 192, 195], 6: [37, 46, 61, 150, 155, 182], 9: [2, 63, 89, 118, 136, 141], 10: [14, 58, 74, 83, 129], 21: [8, 21, 96, 100, 115, 119], 22: [105, 122, 128, 170], 25: [15, 47, 88, 148, 158, 177], 30: [3, 24, 38, 40, 145], 31: [6, 20, 31, 69, 106, 140, 180], 35: [22, 79, 123, 135, 174, 185], 40: [11, 36, 54, 113, 156], 59: [4, 19, 52, 64, 108, 112, 183], 62: [44, 85, 101, 175], 71: [71, 130, 138, 172, 191], 82: [28, 45, 78, 111, 178], 84: [49, 103, 133, 151, 186, 199], 90: [5, 29, 62, 90, 120, 147, 152, 190], 92: [0, 59, 67, 110, 139, 194], 93: [65, 121, 125, 188], 115: [18, 82, 131, 160, 162, 171, 189], 117: [107, 116, 117, 159, 165], 124: [30, 39, 99, 104, 144], 125: [23, 86, 93, 184], 126: [1, 10, 50, 56, 57, 126, 181], 143: [25, 51, 68, 80, 114, 143], 149: [13, 27, 42, 48, 98, 102, 149], 150: [32, 77, 146, 176], 152: [34, 43, 55, 66, 94, 142, 161, 163, 164], 153: [12, 16, 41, 153, 168], 163: [9, 35, 72, 81, 87, 95, 157], 168: [17, 26, 70, 73, 91, 109], 172: [7, 60, 75, 76, 154, 166, 169, 196], 186: [33, 84, 132, 193], 189: [92, 97, 134, 137, 167], 197: [127, 173, 179, 197, 198]}, 62, 936.7266623727543))
+
+
+def find_any_feasible(dataset_index):
+    """
+    Tries every choice of M facility locations (i.e. indices in 0..n-1)
+    and returns the first one that satisfies capacity, alpha‐ and beta‐spread.
+    """
+    p, C, coords, M = load_instance(dataset_index)
+    n = len(p)
+
+    # precompute full distance matrix
+    d_ij = {
+        (i, j): dist(coords[i], coords[j])
+        for i in range(n) for j in range(n)
+    }
+
+    # thresholds
+    alpha = round((sum(p)/M)*0.2)
+    beta  = max(d_ij.values())*0.2
+
+    # trivial global capacity check
+    if sum(p) > M*C:
+        return False, "Total demand exceeds total capacity"
+
+    # trivial alpha check
+    if max(p) > alpha:
+        return False, f"Single community pop {max(p)} > α = {alpha}"
+
+    # try every combination of M distinct units
+    for units in combinations(range(n), M):
+        # compute nearest‐facility distance for each community
+        nearest = [min(d_ij[(i,u)] for u in units) for i in range(n)]
+        spread = max(nearest) - min(nearest)
+        if spread <= beta:
+            # found a feasible set
+            return True, {
+                "units":      units,
+                "alpha":      alpha,
+                "beta":       beta,
+                "capacity":   C,
+                "max_d":      max(nearest),
+                "min_d":      min(nearest),
+                "spread_d":   spread,
+            }
+
+    return False, "No choice of units meets the β‐spread constraint"
+
+# Example usage:
+ok, result = find_any_feasible(8)
+if ok:
+    print("Feasible configuration found!")
+    print(result)
+else:
+    print("Infeasible:", result)
+
